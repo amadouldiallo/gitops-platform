@@ -700,3 +700,38 @@ contenait au moment du Projet 2 :
   les bornes par défaut de la librairie (`0.1, 0.5, 1`) ne permettaient
   tout simplement pas de mesurer (un histogramme Prometheus ne peut
   répondre qu'aux seuils qui correspondent à une de ses bornes `le=...`).
+
+## 🔒 Évolutions liées au Projet 4 (DevSecOps)
+
+Le [Projet 4](https://github.com/amadouldiallo/devsecops-platform) sécurise
+la chaîne d'approvisionnement de CETTE app — contrairement aux Projets 2/3,
+ses Étapes 1-4 (SAST, Trivy, SBOM, Cosign) sont des étapes de **pipeline
+CI**, elles vivent donc directement ici, pas dans un dépôt séparé (voir le
+README de devsecops-platform pour le détail de cette répartition).
+
+- **`.github/workflows/security-ci.yml`** — premier pipeline CI
+  automatisé de ce dépôt (tous les builds précédents avaient été faits à
+  la main). Deux jobs parallèles : SAST (Bandit) et
+  build→trivy fs→trivy image→SBOM(Syft/SPDX)→push→signature (Cosign
+  keyless, par digest).
+- **Workload Identity Federation dédié** (`terraform/modules/iam/main.tf`,
+  SA `gitops-ci`, scopé au dépôt Artifact Registry `gitops-images`) —
+  indépendant de `terraform-runner`, moindre privilège : ce SA ne peut
+  QUE pousser des images, rien d'autre.
+- ⚠️ **Piège rencontré** : `aquasecurity/trivy-action@0.24.0` (version
+  devinée) n'existe pas — la CI échouait dès "Set up job". Les vraies
+  versions ont été vérifiées via l'API GitHub plutôt que supposées.
+- ⚠️ **3 vraies CVE HIGH trouvées par `trivy image`** dans
+  `starlette==0.41.3` (CVE-2025-62727, CVE-2026-48818, CVE-2026-54283) —
+  la version était plafonnée bas depuis l'Étape 1 du Projet 3 pour une
+  tout autre raison (compatibilité `prometheus-fastapi-instrumentator`).
+  Fixé en bumpant `fastapi` (0.141.1) et `starlette` (1.6.0) — ce qui a,
+  par la même occasion, levé la contrainte qui forçait
+  `prometheus-fastapi-instrumentator` à une version plus ancienne (7.1.0
+  → 8.1.0). Vérifié avant de pousser : l'empilement de middlewares OTel
+  (Projet 3, Étape 3) reste identique malgré ce saut de version majeure.
+- **Vérifié réellement, pas juste "la CI est verte"** : signature Cosign
+  vérifiée depuis un poste externe (`cosign verify` avec l'identité exacte
+  `https://github.com/amadouldiallo/gitops-platform/.github/workflows/security-ci.yml@refs/heads/main`)
+  — et vérifié qu'une identité INCORRECTE est bien rejetée (contrôle
+  négatif), pas juste que la bonne passe.
