@@ -31,6 +31,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from opentelemetry.instrumentation.utils import suppress_instrumentation
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from . import db
@@ -119,9 +120,20 @@ def healthz():
 
 @app.get("/readyz")
 def readyz():
-    """Readiness — échoue si la base n'est pas joignable."""
+    """Readiness — échoue si la base n'est pas joignable.
+
+    ⚠️ Piège rencontré pour de vrai (Projet 3, Étape 3) : `/readyz` est
+    exclu du traçage HTTP (`excluded_urls`, voir plus haut) mais son
+    `SELECT 1` reste tracé par `PsycopgInstrumentor` — sans contexte HTTP
+    parent puisque la route est exclue, chaque appel (toutes les 5s, voir
+    `readinessProbe` du chart Helm) créait une trace À PART ENTIÈRE,
+    orpheline, plutôt qu'un span enfant. Découvert en cherchant "pourquoi
+    la moitié des traces dans Tempo ne contiennent qu'un SELECT isolé" —
+    `suppress_instrumentation()` désactive explicitement toute
+    instrumentation (pas seulement HTTP) le temps de cet appel précis.
+    """
     try:
-        with db.pool.connection(timeout=2) as conn:
+        with suppress_instrumentation(), db.pool.connection(timeout=2) as conn:
             conn.execute("SELECT 1")
     except Exception as exc:  # noqa: BLE001 — on veut juste signaler "pas prêt", peu importe la cause exacte
         raise HTTPException(status_code=503, detail=f"base injoignable : {exc}") from exc

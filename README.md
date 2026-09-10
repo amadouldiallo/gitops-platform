@@ -677,3 +677,20 @@ contenait au moment du Projet 2 :
   `k8s/finops/grafana-dashboard.yaml` n'a nécessité AUCUNE modification.
   Testé après bascule : la requête PromQL du panel "coût total du
   cluster" retourne toujours des données réelles.
+- **`total_max_node_count`** (`terraform/modules/gke/variables.tf`) :
+  fausse piste testée puis annulée (4→5→4) en installant Alloy — voir le
+  commentaire du fichier pour l'explication complète (un pod de DaemonSet
+  déjà `Pending` reste bloqué même si un nouveau node apparaît ailleurs).
+- **Traces OpenTelemetry** (`apps/backend/app/main.py`,
+  `apps/backend/requirements.txt`, `charts/app/values.yaml`,
+  `charts/app/templates/backend-configmap.yaml`,
+  `k8s/argocd/application.yaml`) : `FastAPIInstrumentor` +
+  `PsycopgInstrumentor`, export OTLP vers Tempo (Projet 3), conditionnel à
+  `tracing.otlpEndpoint` (vide par défaut — ce dépôt reste utilisable sans
+  le Projet 3). ⚠️ Piège rencontré : `/readyz` est exclu du traçage HTTP
+  mais son `SELECT 1` restait tracé par `PsycopgInstrumentor` — sans
+  parent HTTP, chaque appel de la sonde de readiness (toutes les 5s)
+  créait une trace orpheline à part entière dans Tempo. Fixé en enveloppant
+  cet appel précis dans `suppress_instrumentation()`. Vérifié après coup :
+  une trace `GET /api/tasks` contient bien un span enfant `SELECT`
+  correctement imbriqué (`parentSpanId` du SELECT = spanId du span HTTP).
