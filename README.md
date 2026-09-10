@@ -32,7 +32,7 @@ Mêmes symboles que le Projet 1 en tête de bloc de commentaire :
 | 3 — Helm | `charts/app/` | ✅ **déployé et testé sur le vrai cluster GKE** — CRUD complet vérifié, voir §Helm |
 | 4 — Socle de sécurité K8s | `k8s/namespace/`, `charts/app/templates/` | ✅ **appliqué et testé sur le vrai cluster** — voir §Socle de sécurité |
 | 5 — Ingress & TLS | `k8s/cert-manager/`, `charts/app/templates/ingress.yaml` | ✅ **certificat Let's Encrypt de production réel, testé sans `-k`** — voir §Ingress & TLS |
-| 6 — GitOps (Argo CD) | `argocd/` | ❌ pas encore |
+| 6 — GitOps (Argo CD) | `k8s/argocd/` | ✅ **auto-sync + self-heal testés en conditions réelles** — voir §GitOps |
 | 7 — Secrets (Vault + ESO) | — | ❌ pas encore |
 | 8 — FinOps Kubernetes | — | ❌ pas encore |
 
@@ -313,6 +313,54 @@ Load Balancer GCP (facturé en continu, indépendamment du trafic) en plus
 du 4ᵉ node ajouté ci-dessus — les deux s'ajoutent au budget FinOps déjà en
 place (`module.budget`, filtré par `platform=kubernetes-gitops`).
 
+## GitOps avec Argo CD (Étape 6)
+
+`k8s/argocd/application.yaml` (commité dans ce dépôt — voir
+[github.com/amadouldiallo/gitops-platform](https://github.com/amadouldiallo/gitops-platform))
+déclare une `Application` Argo CD qui pointe vers `charts/app` sur la
+branche `main`, avec `prune` et `selfHeal` activés. Argo CD (Dex,
+notifications et ApplicationSet désactivés — pas nécessaires ici, empreinte
+mémoire réduite) tourne sur le cluster et réconcilie ce namespace en continu.
+
+```mermaid
+sequenceDiagram
+    participant Git as GitHub<br/>(gitops-platform)
+    participant Argo as Argo CD
+    participant K8s as Cluster (namespace task-tracker)
+    participant Toi as Toi (kubectl)
+
+    Argo->>Git: Lit charts/app @ main
+    Argo->>K8s: Applique l'état déclaré (replicas: 1)
+    Note over K8s: Synced / Healthy
+
+    Toi->>K8s: kubectl scale --replicas=5
+    Note over K8s: Dérive : 5 pods tournent,<br/>Git dit toujours 1
+
+    Argo->>K8s: Détecte l'écart (polling + watch)
+    Argo->>K8s: selfHeal : réapplique replicas=1
+    Note over K8s: Synced / Healthy — < 30 secondes
+```
+
+**Testé pour de vrai, pas juste décrit** :
+1. Premier `kubectl apply` de l'`Application` → `Synced / Healthy`
+   immédiatement, sans conflit — Argo CD a adopté proprement les
+   ressources déjà déployées manuellement aux Étapes 3-5 (même nom de
+   release, même namespace).
+2. `kubectl scale deployment task-tracker-backend --replicas=5` → dérive
+   introduite avec succès (`1/5` confirmé par `kubectl get deployment`).
+3. Moins de 30 secondes plus tard : nouvelle synchronisation automatique
+   déclenchée par Argo CD (`OperationStarted` dans `kubectl describe
+   application`), replicas ramenés à 1, pods de trop supprimés — sans
+   AUCUNE intervention manuelle.
+4. L'application reste joignable et les données déjà créées (tâches des
+   étapes précédentes) survivent intactes à tout ce cycle.
+
+⚠️ **Dette technique assumée, pas cachée** : `postgres.password` est
+encore une valeur en clair dans `k8s/argocd/application.yaml`, commitée
+dans Git — exactement ce que l'Étape 7 doit éliminer. Le champ
+`postgres.existingSecret` (déjà prêt dans le chart depuis l'Étape 3) n'est
+pas encore utilisé faute d'un Secret alimenté par Vault pour le remplir.
+
 ## Lancer la stack en local
 
 ```bash
@@ -340,7 +388,8 @@ kubernetes-gitops/
 ├── charts/app/           # Chart Helm (Étape 3) — values-dev.yaml / values-prod.yaml
 ├── k8s/
 │   ├── namespace/         # Socle de sécurité (Étape 4) — appliqué à part du chart Helm
-│   └── cert-manager/      # ClusterIssuer Let's Encrypt (Étape 5)
+│   ├── cert-manager/      # ClusterIssuer Let's Encrypt (Étape 5)
+│   └── argocd/            # Application Argo CD (Étape 6) — auto-sync + self-heal
 └── terraform/
     ├── environments/dev/  # Point d'entrée terraform init/plan/apply
     └── modules/
@@ -392,10 +441,22 @@ helm upgrade task-tracker charts/app -n task-tracker \
   --set ingress.host="$HOST" --set ingress.clusterIssuer=letsencrypt-staging
 ```
 
+Puis Argo CD, pour piloter tout ça depuis Git (voir §GitOps) :
+
+```bash
+helm repo add argo https://argoproj.github.io/argo-helm
+helm install argocd argo/argo-cd -n argocd --create-namespace \
+  --set dex.enabled=false --set notifications.enabled=false --set applicationSet.enabled=false
+
+kubectl apply -f k8s/argocd/application.yaml
+```
+
 ## Prochaine étape
 
-Étape 6 — GitOps avec Argo CD : Git devient la seule source de vérité de
-l'état désiré du cluster. `charts/app` et `k8s/` existent déjà — il s'agit
-maintenant de les pointer depuis une `Application` Argo CD en mode
-auto-sync + self-heal, puis de vérifier qu'un `kubectl scale` manuel est
-bien annulé automatiquement.
+Étape 7 — Secrets (External Secrets Operator + Vault) : éliminer la
+dernière dette technique visible dans ce dépôt, `postgres.password` en
+clair dans `k8s/argocd/application.yaml`. Déployer Vault (mode dev pour
+commencer), External Secrets Operator, et un `ExternalSecret` qui
+synchronise le mot de passe vers un Secret Kubernetes — puis basculer
+`charts/app` sur `postgres.existingSecret` (déjà prêt depuis l'Étape 3)
+pour que ce champ disparaisse de Git pour de bon.
