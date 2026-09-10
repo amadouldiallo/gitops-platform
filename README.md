@@ -647,3 +647,33 @@ seulement décrites. Comme le note le guide original : le **Projet 3**
 (Observability & SRE) s'appuierait directement sur cette plateforme — les
 métriques Prometheus déployées ici pour le FinOps en deviendraient le
 socle, étendu aux logs et aux traces pour une observabilité complète.
+
+## 🔗 Évolutions liées au Projet 3
+
+Le [Projet 3](https://github.com/amadouldiallo/observability-platform) est
+un dépôt **séparé**, mais certaines de ses étapes touchent nécessairement
+des ressources qui appartiennent à CE dépôt-ci (l'application, son socle
+réseau) — documenté ici pour que ce README reste le reflet exact de ce qui
+tourne réellement sur le cluster, pas seulement de ce que ce dépôt
+contenait au moment du Projet 2 :
+
+- **Métriques backend** (`apps/backend/app/main.py`,
+  `apps/backend/requirements.txt`) : instrumentation
+  `prometheus-fastapi-instrumentator`, endpoint `/metrics` exposé. ⚠️ Piège
+  rencontré : la version 8.1.0 exige `starlette>=1.0.0`, une version qui
+  n'existe pas encore pour la branche de FastAPI épinglée ici (0.115.6,
+  qui plafonne `starlette<0.42.0`) — `pip` refusait de résoudre les
+  dépendances. Fixé en épinglant `7.1.0`, dont la contrainte
+  (`starlette<1.0.0,>=0.30.0`) reste compatible.
+- **NetworkPolicy** (`k8s/namespace/05-networkpolicy.yaml`) :
+  `backend-allow-from-frontend` autorise désormais aussi le namespace
+  `monitoring` du Projet 3, sans quoi son Prometheus se serait heurté au
+  même piège déjà documenté plus haut pour ingress-nginx (cible "down",
+  sans le moindre message d'erreur explicite).
+- **Datasource Grafana** (`k8s/finops/grafana-datasource.yaml`) : l'URL
+  pointe maintenant vers `kube-prometheus-stack-prometheus.monitoring` (le
+  Prometheus Operator du Projet 3), qui a remplacé le Prometheus "nu"
+  utilisé jusqu'ici pour le FinOps — même `uid` fixe conservé, donc
+  `k8s/finops/grafana-dashboard.yaml` n'a nécessité AUCUNE modification.
+  Testé après bascule : la requête PromQL du panel "coût total du
+  cluster" retourne toujours des données réelles.

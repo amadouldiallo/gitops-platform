@@ -72,6 +72,16 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: ingress-nginx
+        # Projet 3 (Observability & SRE Platform, dépôt observability-platform,
+        # indépendant de celui-ci) : le Prometheus Operator (namespace
+        # `monitoring`) scrape désormais /metrics sur ce même port — sans
+        # cette entrée, son ServiceMonitor se serait heurté exactement au
+        # même piège qu'ingress-nginx ci-dessus (même symptôme attendu :
+        # cible "down" dans Prometheus, sans le moindre message d'erreur
+        # explicite côté scrape).
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
       ports:
         - protocol: TCP
           port: 8000

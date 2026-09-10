@@ -10,6 +10,14 @@
 # automatiquement — un `helm upgrade`/redémarrage de Grafana ne perd donc
 # jamais cette configuration, contrairement à un clic dans l'UI (non
 # persisté, `persistence.enabled=false` ici — voir §FinOps du README).
+# ⚠️ Piège rencontré pour de vrai — Projet 3 (Observability & SRE Platform)
+# a remplacé le Prometheus "nu" (`prometheus-server.prometheus-system`) par
+# le Prometheus Operator (`kube-prometheus-stack`, namespace `monitoring`) :
+# l'URL ci-dessous a dû être mise à jour en conséquence, sans quoi ce
+# dashboard aurait continué de pointer vers un Service qui n'existe plus.
+# Le `uid: prometheus` fixé plus bas, lui, n'a pas changé — c'est
+# précisément ce qui a permis à grafana-dashboard.yaml (Projet 2) de
+# continuer à fonctionner sans la moindre modification.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -27,5 +35,5 @@ data:
         # doit le référencer.
         type: prometheus
         access: proxy
-        url: http://prometheus-server.prometheus-system.svc.cluster.local:80
+        url: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
         isDefault: true

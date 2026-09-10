@@ -30,6 +30,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from . import db
 from .schemas import Task, TaskCreate
@@ -54,6 +55,21 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
+
+# =============================================================================
+# Métriques Prometheus — Projet 3 (Observability & SRE Platform)
+# =============================================================================
+# 🎯 Le concept
+# `instrument(app)` ajoute un middleware qui mesure CHAQUE requête HTTP
+# (méthode, route, code de statut, durée) ; `expose(app)` publie ces
+# mesures sur GET /metrics, au format que Prometheus sait scraper.
+#
+# ❓ Pourquoi exclure /healthz et /readyz
+# Ces deux routes sont sondées par les probes Kubernetes toutes les 5 à 10
+# secondes (voir livenessProbe/readinessProbe du chart Helm) — sans les
+# exclure, elles domineraient le volume de métriques sans jamais renseigner
+# sur l'usage réel de l'API par des utilisateurs.
+Instrumentator(excluded_handlers=["/healthz", "/readyz"]).instrument(app).expose(app)
 
 
 @app.get("/healthz")
