@@ -50,7 +50,13 @@ variable "extra_labels" {
 }
 
 variable "budget_amount_eur" {
+  # Relevé de 30 à 100 en testant l'Étape 7 : ce qui tourne réellement sur
+  # ce cluster a grossi à chaque étape (4 nodes e2-medium en continu,
+  # control plane régional, Load Balancer ingress-nginx, Vault, Argo CD,
+  # cert-manager, External Secrets Operator) — 30 € ne reflétait plus la
+  # réalité du lab depuis un moment. Un budget qui n'alerte jamais parce
+  # qu'il est réglé trop bas dès le départ ne sert à rien.
   description = "Montant du budget mensuel en euros"
   type        = number
-  default     = 30
+  default     = 100
 }

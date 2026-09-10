@@ -33,7 +33,7 @@ Mêmes symboles que le Projet 1 en tête de bloc de commentaire :
 | 4 — Socle de sécurité K8s | `k8s/namespace/`, `charts/app/templates/` | ✅ **appliqué et testé sur le vrai cluster** — voir §Socle de sécurité |
 | 5 — Ingress & TLS | `k8s/cert-manager/`, `charts/app/templates/ingress.yaml` | ✅ **certificat Let's Encrypt de production réel, testé sans `-k`** — voir §Ingress & TLS |
 | 6 — GitOps (Argo CD) | `k8s/argocd/` | ✅ **auto-sync + self-heal testés en conditions réelles** — voir §GitOps |
-| 7 — Secrets (Vault + ESO) | — | ❌ pas encore |
+| 7 — Secrets (Vault + ESO) | `k8s/external-secrets/` | ✅ **plus aucun mot de passe en clair dans Git** — voir §Secrets |
 | 8 — FinOps Kubernetes | — | ❌ pas encore |
 
 ## Infrastructure (Terraform)
@@ -355,11 +355,70 @@ sequenceDiagram
 4. L'application reste joignable et les données déjà créées (tâches des
    étapes précédentes) survivent intactes à tout ce cycle.
 
-⚠️ **Dette technique assumée, pas cachée** : `postgres.password` est
-encore une valeur en clair dans `k8s/argocd/application.yaml`, commitée
-dans Git — exactement ce que l'Étape 7 doit éliminer. Le champ
-`postgres.existingSecret` (déjà prêt dans le chart depuis l'Étape 3) n'est
-pas encore utilisé faute d'un Secret alimenté par Vault pour le remplir.
+✅ **Dette résolue depuis** : `postgres.password` en clair dans
+`k8s/argocd/application.yaml` a disparu à l'Étape 7 — voir §Secrets pour
+le détail.
+
+## Secrets — Vault + External Secrets Operator (Étape 7)
+
+Vault (mode **dev** — stockage en mémoire, à documenter comme tel, voir
+`k8s/external-secrets/vault-setup.md`) et External Secrets Operator
+tournent sur le cluster. `k8s/external-secrets/` déclare un
+`ClusterSecretStore` (auth Kubernetes — ESO présente le jeton de son
+propre pod, aucune clé Vault statique nulle part) et un `ExternalSecret`
+qui maintient un vrai Secret Kubernetes synchronisé depuis Vault.
+
+```mermaid
+sequenceDiagram
+    participant Vault
+    participant ESO as External Secrets<br/>Operator
+    participant K8s as Secret Kubernetes<br/>(task-tracker-vault-postgres)
+    participant BE as backend / db
+
+    Note over Vault: secret/task-tracker/postgres<br/>{ password: "..." }
+    ESO->>Vault: Auth Kubernetes (jeton de SON PROPRE pod)
+    Vault-->>ESO: Jeton Vault de courte durée
+    ESO->>Vault: Lit secret/task-tracker/postgres
+    ESO->>K8s: Crée/maintient le Secret (refreshInterval: 1h)
+    BE->>K8s: secretKeyRef (comme n'importe quel Secret K8s)
+    Note over BE: Ne parle JAMAIS à Vault directement
+```
+
+`charts/app/templates/backend-secret.yaml` (Étape 3) était déjà prêt pour
+ce jour : `postgres.existingSecret` renseigné, ce template ne crée plus
+rien lui-même (voir sa condition `{{- if not .Values.postgres.existingSecret }}`).
+
+**Testé pour de vrai, en trois temps** :
+1. `ClusterSecretStore` → `Valid / Ready` ; `ExternalSecret` →
+   `SecretSynced` ; le Secret `task-tracker-vault-postgres` contient bien
+   la valeur stockée dans Vault.
+2. `k8s/argocd/application.yaml` mis à jour (`postgres.password` supprimé,
+   `postgres.existingSecret` ajouté), commité, poussé.
+3. Après resynchronisation, `task-tracker-backend` et `task-tracker-db`
+   référencent le nouveau Secret, l'ancien (`task-tracker-postgres`,
+   géré par le chart) a été **supprimé automatiquement** par `prune:
+   true`, et une nouvelle tâche créée via l'API confirme que
+   l'authentification Postgres fonctionne toujours — la même valeur
+   circule, juste par un chemin différent.
+
+⚠️ **Piège Argo CD réel, rencontré en éditant `k8s/argocd/application.yaml`** :
+contrairement à `charts/app` (réconcilié en continu), le `spec` de
+l'`Application` elle-même n'est PAS repris automatiquement depuis Git —
+`selfHeal` ne s'applique qu'aux ressources que l'Application DÉCRIT, pas à
+sa propre définition. Un commit qui modifie ce fichier exige un nouveau
+`kubectl apply -f k8s/argocd/application.yaml`, comme au premier
+bootstrap. Vécu concrètement : `kubectl describe application` affichait
+déjà la nouvelle révision Git, mais les pods continuaient de pointer vers
+l'ancien Secret tant que ce `kubectl apply` n'avait pas été refait. Un
+`ApplicationSet` ou le pattern "app-of-apps" éliminent cette étape
+manuelle résiduelle — hors scope ici.
+
+⚠️ **Dette technique restante, assumée** : Vault tourne en mode dev
+(stockage en mémoire — une donnée déjà perdue une fois pendant cette
+étape, lors d'un remplacement de node pool). Un Vault de production
+demanderait un stockage persistant et un vrai processus de scellement —
+hors scope pour ce lab, mais le flux ESO ↔ Vault lui-même (auth
+Kubernetes, `ClusterSecretStore`, `ExternalSecret`) reste identique.
 
 ## Lancer la stack en local
 
@@ -389,7 +448,8 @@ kubernetes-gitops/
 ├── k8s/
 │   ├── namespace/         # Socle de sécurité (Étape 4) — appliqué à part du chart Helm
 │   ├── cert-manager/      # ClusterIssuer Let's Encrypt (Étape 5)
-│   └── argocd/            # Application Argo CD (Étape 6) — auto-sync + self-heal
+│   ├── argocd/            # Application Argo CD (Étape 6) — auto-sync + self-heal
+│   └── external-secrets/  # ClusterSecretStore + ExternalSecret (Étape 7) — Vault
 └── terraform/
     ├── environments/dev/  # Point d'entrée terraform init/plan/apply
     └── modules/
@@ -451,12 +511,32 @@ helm install argocd argo/argo-cd -n argocd --create-namespace \
 kubectl apply -f k8s/argocd/application.yaml
 ```
 
+Puis Vault + External Secrets Operator (voir §Secrets pour le détail et
+`k8s/external-secrets/vault-setup.md` pour la configuration Vault) :
+
+```bash
+helm repo add hashicorp https://helm.releases.hashicorp.com
+helm install vault hashicorp/vault -n vault --create-namespace \
+  --set server.dev.enabled=true --set injector.enabled=false
+
+helm repo add external-secrets https://charts.external-secrets.io
+helm install external-secrets external-secrets/external-secrets \
+  -n external-secrets --create-namespace
+
+# Configuration Vault (auth Kubernetes, policy, secret) — voir
+# k8s/external-secrets/vault-setup.md pour le détail commenté
+
+kubectl apply -f k8s/external-secrets/clustersecretstore.yaml
+kubectl apply -f k8s/external-secrets/externalsecret.yaml
+```
+
 ## Prochaine étape
 
-Étape 7 — Secrets (External Secrets Operator + Vault) : éliminer la
-dernière dette technique visible dans ce dépôt, `postgres.password` en
-clair dans `k8s/argocd/application.yaml`. Déployer Vault (mode dev pour
-commencer), External Secrets Operator, et un `ExternalSecret` qui
-synchronise le mot de passe vers un Secret Kubernetes — puis basculer
-`charts/app` sur `postgres.existingSecret` (déjà prêt depuis l'Étape 3)
-pour que ce champ disparaisse de Git pour de bon.
+Étape 8 (FinOps Kubernetes) : resources.requests/limits déjà en place
+depuis l'Étape 4 (voir `charts/app/templates/*` et le `LimitRange` du
+namespace) — il reste à installer OpenCost, connecté à Prometheus, pour
+visualiser le coût réel par namespace et par label, et un dashboard
+Grafana correspondant. Vu la croissance du cluster au fil de ce guide
+(4 nodes e2-medium, Load Balancer, contrôle plane régional — voir
+§Infrastructure), cette visibilité de coût devient concrètement utile,
+pas juste théorique.

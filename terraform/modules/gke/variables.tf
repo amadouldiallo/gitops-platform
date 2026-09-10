@@ -65,9 +65,24 @@ variable "master_ipv4_cidr_block" {
 }
 
 variable "machine_type" {
-  description = "Type de machine des nodes. e2-small par défaut — un cluster régional facture le control plane ET chaque node en continu, voir README.md avant d'augmenter cette valeur ou total_max_node_count."
+  # e2-small -> e2-medium en testant l'Étape 7. Après deux relevés successifs
+  # de total_max_node_count (Étapes 5 et 7), un nœud a fini par tomber
+  # NotReady sous charge (agent réseau Cilium en échec de santé,
+  # probablement par manque de ressources), puis un SECOND nœud différent
+  # juste après le premier réparé — un signe de sous-dimensionnement
+  # systémique, pas un incident isolé.
+  #
+  # ⚠️ Leçon FinOps concrète : chaque node porte une charge FIXE de
+  # DaemonSets GKE (agent Cilium, fluentbit, collecteur de métriques,
+  # agent de connectivité...), quelle que soit sa taille. Multiplier les
+  # PETITS nodes (la réaction réflexe à "pas assez de ressources")
+  # multiplie AUSSI cette charge fixe — les rendements sont décroissants.
+  # Moins de nodes plus gros amortit ce coût fixe sur davantage de
+  # capacité utile par node, pour un total de mémoire allouable
+  # équivalent, voire supérieur, à budget comparable.
+  description = "Type de machine des nodes. e2-medium par défaut — un cluster régional facture le control plane ET chaque node en continu, voir README.md avant d'augmenter cette valeur ou total_max_node_count."
   type        = string
-  default     = "e2-small"
+  default     = "e2-medium"
 }
 
 variable "disk_size_gb" {
@@ -83,12 +98,12 @@ variable "total_min_node_count" {
 }
 
 variable "total_max_node_count" {
-  # Relevé de 3 à 4 en testant l'Étape 5 : avec ingress-nginx + cert-manager
-  # en plus de l'appli, 3 nodes e2-small tournaient déjà à 87-97 % de
-  # mémoire ALLOUÉE (requests), sans aucune marge pour un pod de plus — le
-  # scheduler refusait le controller ingress-nginx ("Insufficient memory").
-  # Une seule unité de plus plutôt qu'un passage à un machine_type plus
-  # gros : coût marginal, élasticité conservée par l'autoscaling.
+  # Relevé deux fois de suite (3 -> 4 -> 6) au fil des Étapes 5 et 7, avant
+  # de finalement changer machine_type (e2-small -> e2-medium, voir sa
+  # description) plutôt que de continuer à empiler des petits nodes —
+  # rabaissé ici à 4 en conséquence : à ~2x la mémoire allouable par node,
+  # une capacité totale équivalente ou supérieure demande deux fois moins
+  # de nodes, donc deux fois moins de charge fixe de DaemonSets dupliquée.
   description = "Nombre total MAXIMUM de nodes sur l'ensemble des zones (pas par zone)"
   type        = number
   default     = 4
