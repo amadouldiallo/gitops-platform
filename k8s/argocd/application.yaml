@@ -23,13 +23,15 @@
 # false) devrait, lui, repasser par un commit — pas par un kubectl apply
 # manuel, qui casserait la promesse GitOps dès le premier écart corrigé.
 #
-# ⚠️ postgres.password ci-dessous reste un COMPROMIS DÉLIBÉRÉMENT TEMPORAIRE :
-# une vraie valeur (même "dev-only") commitée dans un manifest Argo CD est
-# exactement ce que l'Étape 7 (External Secrets Operator + Vault) doit
-# éliminer. Elle disparaîtra de ce fichier dès que
-# `postgres.existingSecret` (déjà prêt dans le chart, voir
-# charts/app/templates/backend-secret.yaml) pointera vers un Secret
-# alimenté par Vault plutôt que déclaré ici en clair.
+# ✅ Étape 7 résolue : plus aucun mot de passe en clair ici.
+# `postgres.existingSecret` pointe vers `task-tracker-vault-postgres`, un
+# Secret Kubernetes ALIMENTÉ par un ExternalSecret (voir
+# k8s/external-secrets/externalsecret.yaml), lui-même synchronisé depuis
+# Vault via External Secrets Operator (k8s/external-secrets/) — jamais
+# géré par ce chart Helm ni par Argo CD (voir la condition
+# `{{- if not .Values.postgres.existingSecret }}` dans
+# charts/app/templates/backend-secret.yaml, qui ne crée plus rien dès que
+# ce champ est renseigné).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -48,7 +50,7 @@ spec:
       valuesObject:
         imageRegistry: europe-west1-docker.pkg.dev/devops-498817/gitops-images
         postgres:
-          password: dev-cluster-test-only # voir l'avertissement ci-dessus
+          existingSecret: task-tracker-vault-postgres # voir l'avertissement ci-dessus — plus de valeur en clair
         ingress:
           enabled: true
           tls: true
