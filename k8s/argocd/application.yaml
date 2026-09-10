@@ -15,13 +15,21 @@
 # corrige en continu l'écart avec la température réelle du cluster, sans
 # intervention manuelle.
 #
-# ⚠️ Ce fichier est lui-même commité dans Git — cohérent avec "Git = seule
-# source de vérité" — mais son PREMIER apply reste manuel
-# (`kubectl apply -f k8s/argocd/application.yaml`) : Argo CD ne peut pas
-# se déployer lui-même avant d'exister. Une fois cette Application créée,
-# en revanche, un futur changement de CE fichier (ex. passer selfHeal à
-# false) devrait, lui, repasser par un commit — pas par un kubectl apply
-# manuel, qui casserait la promesse GitOps dès le premier écart corrigé.
+# ⚠️ Piège rencontré pour de vrai en éditant ce fichier à l'Étape 7 — Argo
+# CD réconcilie `charts/app` en continu (c'est TOUT l'intérêt de
+# selfHeal), mais ne surveille PAS son propre `spec.source` de la même
+# façon : cette ressource `Application` reste un objet Kubernetes ordinaire.
+# Un commit qui modifie CE fichier (ex. le passage de postgres.password à
+# postgres.existingSecret ci-dessous) n'est PAS repris tout seul — il faut
+# réappliquer `kubectl apply -f k8s/argocd/application.yaml` à chaque fois,
+# exactement comme au tout premier bootstrap. Vécu concrètement : après un
+# `git push`, `kubectl describe application` affichait déjà la nouvelle
+# révision Git dans son statut, mais `spec.source.helm.valuesObject`
+# restait l'ANCIENNE valeur tant que ce kubectl apply n'avait pas été
+# refait — les pods continuaient donc de pointer vers l'ancien Secret.
+# Un `ApplicationSet` (désactivé ici, voir README) ou un pattern
+# "app-of-apps" existent précisément pour éliminer cette étape manuelle
+# résiduelle.
 #
 # ✅ Étape 7 résolue : plus aucun mot de passe en clair ici.
 # `postgres.existingSecret` pointe vers `task-tracker-vault-postgres`, un
