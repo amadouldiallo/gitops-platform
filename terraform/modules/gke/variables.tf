@@ -101,9 +101,22 @@ variable "total_max_node_count" {
   # Relevé deux fois de suite (3 -> 4 -> 6) au fil des Étapes 5 et 7, avant
   # de finalement changer machine_type (e2-small -> e2-medium, voir sa
   # description) plutôt que de continuer à empiler des petits nodes —
-  # rabaissé ici à 4 en conséquence : à ~2x la mémoire allouable par node,
-  # une capacité totale équivalente ou supérieure demande deux fois moins
-  # de nodes, donc deux fois moins de charge fixe de DaemonSets dupliquée.
+  # rabaissé à 4 en conséquence.
+  #
+  # ⚠️ Fausse piste testée puis annulée en installant Alloy (Projet 3,
+  # Étape 2) : les pods de son DaemonSet restaient `Pending` sur 3 nodes
+  # sur 4 (tous à 95-98% de CPU alloué). Réflexe testé : remonter cette
+  # valeur à 5 pour donner de l'air au cluster-autoscaler — SANS EFFET,
+  # et le statut `cluster-autoscaler-status` (namespace kube-system)
+  # explique pourquoi : un pod de DaemonSet déjà créé est épinglé, via
+  # nodeAffinity, au node EXISTANT que le DaemonSet controller lui a
+  # assigné à SA création — ajouter un 5ᵉ node ne libère aucune capacité
+  # sur les 4 nodes DÉJÀ pleins, donc l'autoscaler ne déclenche même pas
+  # de scale-up ("NoActivity"). La vraie cause n'était pas le nombre de
+  # nodes mais le CHOIX d'un DaemonSet pour un composant qui n'en avait
+  # pas besoin (voir k8s/loki/alloy-values.yaml du Projet 3,
+  # `controller.type: deployment`) — ramenée à 4 ici, cette valeur n'a
+  # jamais été le bon levier.
   description = "Nombre total MAXIMUM de nodes sur l'ensemble des zones (pas par zone)"
   type        = number
   default     = 4
