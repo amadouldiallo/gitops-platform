@@ -10,3 +10,7 @@ data:
   PGPORT: "5432"
   PGDATABASE: {{ .Values.postgres.database | quote }}
   PGUSER: {{ .Values.postgres.user | quote }}
+  OTEL_SERVICE_NAME: "task-tracker-backend"
+  {{- if .Values.tracing.otlpEndpoint }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.tracing.otlpEndpoint | quote }}
+  {{- end }}

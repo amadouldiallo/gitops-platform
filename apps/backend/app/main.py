@@ -26,6 +26,7 @@ qu'on écrit les probes Kubernetes (Étape 3/4) :
     comportement le temps qu'une base momentanément indisponible revienne.
 """
 
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -70,6 +71,44 @@ app.add_middleware(
 # exclure, elles domineraient le volume de métriques sans jamais renseigner
 # sur l'usage réel de l'API par des utilisateurs.
 Instrumentator(excluded_handlers=["/healthz", "/readyz"]).instrument(app).expose(app)
+
+# =============================================================================
+# Traces distribuées — Projet 3 (Observability & SRE Platform), Étape 3
+# =============================================================================
+# 🎯 Le concept
+# `FastAPIInstrumentor` crée automatiquement un span par requête HTTP
+# entrante ; `PsycopgInstrumentor` fait pareil pour chaque requête SQL —
+# et les relie en un seul arbre : une requête `/api/tasks` lente devient
+# visible comme "80% du temps passé dans LA requête SQL", pas juste "la
+# route est lente" (voir le concept de l'Étape 3 du guide).
+#
+# ❓ Pourquoi c'est conditionnel (`if OTEL_ENDPOINT`)
+# Ce backend appartient au Projet 2 (task-tracker) et doit rester
+# utilisable SEUL (`docker compose`, ou un cluster sans le Projet 3) — le
+# faire dépendre en dur d'un Tempo qui n'existe pas forcément casserait
+# cet usage. Vide par défaut (voir charts/app/values.yaml, rempli
+# uniquement par k8s/argocd/application.yaml du Projet 3).
+OTEL_ENDPOINT = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+if OTEL_ENDPOINT:
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.instrumentation.psycopg import PsycopgInstrumentor
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+    resource = Resource.create({"service.name": os.environ.get("OTEL_SERVICE_NAME", "task-tracker-backend")})
+    provider = TracerProvider(resource=resource)
+    # insecure=True : le trafic OTLP reste interne au cluster (backend ->
+    # Tempo, namespace tracing) — voir k8s/tracing/networkpolicy.yaml
+    # (Projet 3) qui restreint déjà QUI peut atteindre Tempo. Chiffrer un
+    # saut intra-cluster n'apporterait rien ici.
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=OTEL_ENDPOINT, insecure=True)))
+    trace.set_tracer_provider(provider)
+
+    FastAPIInstrumentor.instrument_app(app, excluded_urls="healthz,readyz,metrics")
+    PsycopgInstrumentor().instrument()
 
 
 @app.get("/healthz")

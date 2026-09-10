@@ -64,6 +64,12 @@ spec:
           tls: true
           host: 34-34-138-87.nip.io # IP du LoadBalancer ingress-nginx — change si le service est recréé
           clusterIssuer: letsencrypt-prod
+        tracing:
+          # Projet 3 (Observability), Étape 3 — Tempo namespace tracing,
+          # récepteur OTLP gRPC. Vide dans values.yaml (défaut du chart) :
+          # ce champ n'existe QUE parce que ce cluster précis fait aussi
+          # tourner le Projet 3, pas une propriété intrinsèque du Projet 2.
+          otlpEndpoint: tempo.tracing.svc.cluster.local:4317
 
   destination:
     server: https://kubernetes.default.svc

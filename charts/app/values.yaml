@@ -76,6 +76,15 @@ ingress:
   tls: false
   clusterIssuer: letsencrypt-staging # voir k8s/cert-manager/clusterissuers.yaml — "staging" par défaut, jamais "prod" sans le valider d'abord
 
+tracing:
+  # Vide par défaut = OpenTelemetry désactivé (voir apps/backend/app/main.py :
+  # l'exporteur ne s'active QUE si cette variable est non vide). Ce chart
+  # reste utilisable seul (docker-compose, cluster sans Projet 3) sans
+  # dépendre d'un Tempo qui n'existe pas forcément — rempli uniquement par
+  # k8s/argocd/application.yaml (Projet 3 présent) via valuesObject, jamais
+  # ici en dur.
+  otlpEndpoint: ""
+
 # Namespace cible — voir k8s/namespace/00-namespace.yaml. Doit exister
 # AVANT `helm install` (voir README §Socle de sécurité) : ce chart ne le
 # crée pas lui-même (son cycle de vie ne doit pas dépendre d'une release
