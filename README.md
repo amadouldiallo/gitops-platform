@@ -694,3 +694,9 @@ contenait au moment du Projet 2 :
   cet appel précis dans `suppress_instrumentation()`. Vérifié après coup :
   une trace `GET /api/tasks` contient bien un span enfant `SELECT`
   correctement imbriqué (`parentSpanId` du SELECT = spanId du span HTTP).
+- **Bornes d'histogramme de latence** (`apps/backend/app/main.py`) :
+  personnalisées à `(0.1, 0.3, 0.5, 1)` — le SLI "latence" du Projet 3
+  (Étape 5) demande précisément "% de requêtes sous 300ms", un seuil que
+  les bornes par défaut de la librairie (`0.1, 0.5, 1`) ne permettaient
+  tout simplement pas de mesurer (un histogramme Prometheus ne peut
+  répondre qu'aux seuils qui correspondent à une de ses bornes `le=...`).

@@ -32,7 +32,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from opentelemetry.instrumentation.utils import suppress_instrumentation
-from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_fastapi_instrumentator import Instrumentator, metrics
 
 from . import db
 from .schemas import Task, TaskCreate
@@ -71,7 +71,20 @@ app.add_middleware(
 # secondes (voir livenessProbe/readinessProbe du chart Helm) — sans les
 # exclure, elles domineraient le volume de métriques sans jamais renseigner
 # sur l'usage réel de l'API par des utilisateurs.
-Instrumentator(excluded_handlers=["/healthz", "/readyz"]).instrument(app).expose(app)
+#
+# ⚠️ Piège rencontré pour de vrai en écrivant le SLI de latence (Projet 3,
+# Étape 5) : les bornes d'histogramme PAR DÉFAUT de cette librairie sont
+# (0.1, 0.5, 1) secondes — aucune borne exactement à 0.3s, alors que le
+# guide demande précisément "% de requêtes sous 300ms". Un histogramme
+# Prometheus ne peut mesurer QUE les seuils qui correspondent à une de ses
+# bornes (`le=...`) ; sans borne à 0.3, ce SLI précis est tout simplement
+# incalculable, aucune formule PromQL n'y changerait rien. Fixé en
+# ajoutant 0.3 aux bornes personnalisées — le choix des bornes d'un
+# histogramme doit être aligné sur les seuils qu'on veut réellement
+# mesurer, pas laissé au hasard des valeurs par défaut d'une librairie.
+_instrumentator = Instrumentator(excluded_handlers=["/healthz", "/readyz"])
+_instrumentator.add(metrics.default(latency_lowr_buckets=(0.1, 0.3, 0.5, 1)))
+_instrumentator.instrument(app).expose(app)
 
 # =============================================================================
 # Traces distribuées — Projet 3 (Observability & SRE Platform), Étape 3
