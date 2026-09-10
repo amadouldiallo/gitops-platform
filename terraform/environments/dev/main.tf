@@ -17,6 +17,7 @@ module "network" {
 module "iam" {
   source     = "../../modules/iam"
   project_id = var.project_id
+  region     = var.region
 
   iam_bindings = {
     # roles/container.admin : accès complet au cluster (créer/lister/gérer
@@ -26,6 +27,11 @@ module "iam" {
     # dehors de tout pipeline CI pour l'instant.
     "roles/container.admin" = ["user:${var.admin_email}"]
   }
+
+  # Projet 4 (DevSecOps) — Workload Identity Federation pour que la CI
+  # GitHub Actions (SAST, Trivy, SBOM, Cosign) pousse des images sans clé
+  # statique. Voir modules/iam/main.tf pour le détail complet.
+  github_repository = var.github_repository
 }
 
 module "budget" {

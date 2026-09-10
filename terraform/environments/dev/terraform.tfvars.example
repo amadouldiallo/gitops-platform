@@ -15,3 +15,9 @@ admin_email = "prenom.nom@example.com"
 environment = "dev"
 cost_center = "lab-perso"
 # extra_labels = { team = "platform" }
+
+# --- Projet 4 (DevSecOps) -------------------------------------------------
+# Dépôt GitHub ("owner/repo") autorisé à s'authentifier via Workload
+# Identity Federation pour la CI (SAST/Trivy/SBOM/Cosign). Laisse
+# commenté (null) tant que le Projet 4 n'est pas branché.
+# github_repository = "ton-compte/gitops-platform"

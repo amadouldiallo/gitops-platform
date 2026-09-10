@@ -21,6 +21,14 @@ variable "admin_email" {
   type        = string
 }
 
+variable "github_repository" {
+  # Pas de défaut à "amadouldiallo/gitops-platform" en dur : même principe
+  # que project_id, jamais codé en dur (voir le Projet 1 pour l'explication).
+  description = "Projet 4 — dépôt GitHub (\"owner/repo\") autorisé à s'authentifier via Workload Identity Federation. null = aucune ressource WIF créée."
+  type        = string
+  default     = null
+}
+
 variable "environment" {
   description = "Label FinOps 'environment'"
   type        = string

@@ -20,3 +20,24 @@ variable "iam_bindings" {
   type        = map(list(string))
   default     = {}
 }
+
+variable "github_repository" {
+  # Pas de défaut : vide tant que le Projet 4 n'est pas branché — aucune
+  # ressource Workload Identity Federation créée dans ce cas (voir les
+  # `count = var.github_repository != null ? 1 : 0` de main.tf).
+  description = "Dépôt GitHub autorisé à s'authentifier via Workload Identity Federation, format \"owner/repo\" (ex. amadouldiallo/gitops-platform)"
+  type        = string
+  default     = null
+}
+
+variable "region" {
+  description = "Région GCP du dépôt Artifact Registry ciblé par le SA de CI"
+  type        = string
+  default     = "europe-west1"
+}
+
+variable "artifact_registry_repository" {
+  description = "Nom du dépôt Artifact Registry que la CI est autorisée à pousser (roles/artifactregistry.writer, scopé à ce dépôt précis)"
+  type        = string
+  default     = "gitops-images"
+}

@@ -1,0 +1,136 @@
+# =============================================================================
+# CI de sécurité — SAST, scan de dépendances/image, SBOM, signature
+# =============================================================================
+# 🎯 Le concept
+# Projet 4 (DevSecOps & Supply Chain Security), Étapes 1-4 — ce pipeline
+# vit ICI, dans le dépôt de l'app qu'il protège, pas dans le dépôt
+# devsecops-platform (qui ne contient que ce qui s'applique côté cluster :
+# Kyverno, Falco, NetworkPolicy — voir son README pour l'explication).
+#
+# ❓ Pourquoi deux jobs séparés (sast / build-scan-sign) plutôt qu'un seul
+# Deux vérifications indépendantes : un SAST qui échoue ne devrait pas
+# empêcher de voir aussi le résultat du scan de dépendances dans la même
+# run — les deux s'exécutent en parallèle, chacun bloque la CI (donc le
+# merge, une fois la protection de branche activée) s'il échoue, sans
+# attendre l'autre.
+name: Security CI
+
+on:
+  push:
+    branches: [main]
+    paths: ["apps/backend/**", ".github/workflows/security-ci.yml"]
+  pull_request:
+    paths: ["apps/backend/**", ".github/workflows/security-ci.yml"]
+
+# id-token: write est REQUIS pour Workload Identity Federation (auth GCP,
+# voir job build-scan-sign) ET pour la signature keyless Cosign — les deux
+# empruntent le jeton OIDC que GitHub Actions émet pour cette run.
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  IMAGE: europe-west1-docker.pkg.dev/devops-498817/gitops-images/task-tracker-backend
+
+jobs:
+  sast:
+    name: SAST (Bandit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # -ll : signale medium ET high severity — un compromis assumé entre
+      # bruit (low severity, souvent des faux positifs sur ce genre de
+      # petite appli) et signal réel. Voir apps/backend dans le dépôt.
+      - name: Bandit
+        run: |
+          pip install bandit
+          bandit -r apps/backend/app -ll
+
+  build-scan-sign:
+    name: Build, scan, SBOM, sign
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ❓ Pourquoi scanner le filesystem AVANT même de construire l'image
+      # `trivy fs` lit requirements.txt directement — détecte une
+      # dépendance vulnérable avant d'avoir dépensé le moindre temps de
+      # build sur une image qu'on rejettera de toute façon.
+      - name: Trivy — scan des dépendances (filesystem)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: apps/backend
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      # Workload Identity Federation — voir terraform/modules/iam/main.tf.
+      # Aucune clé JSON : ce jeton OIDC, signé par GitHub pour CETTE run
+      # précise, est échangé contre un accès temporaire au SA gitops-ci.
+      - name: Authentification GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "projects/963917835852/locations/global/workloadIdentityPools/gitops-github-actions/providers/github-actions-provider"
+          service_account: "gitops-ci@devops-498817.iam.gserviceaccount.com"
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker pour Artifact Registry
+        run: gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet
+
+      - name: Build
+        run: docker build -t "$IMAGE:${{ github.sha }}" apps/backend
+
+      # Sur l'image construite, PAS ENCORE poussée — un même réflexe que
+      # trivy fs : rejeter avant de pousser quoi que ce soit de vulnérable
+      # sur le registre.
+      - name: Trivy — scan de l'image
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: "${{ env.IMAGE }}:${{ github.sha }}"
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      # SBOM généré sur l'image locale, publié comme artefact du run —
+      # consultable même si l'image elle-même n'est jamais poussée (ex.
+      # sur une Pull Request, voir le déclencheur `on:` plus haut).
+      - name: SBOM (Syft, SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: "${{ env.IMAGE }}:${{ github.sha }}"
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+
+      # Ne pousse (et ne signe) que sur main — une Pull Request valide la
+      # chaîne jusqu'au SBOM, mais ne publie jamais d'image tant qu'elle
+      # n'est pas mergée.
+      - name: Push
+        if: github.event_name == 'push'
+        run: docker push "$IMAGE:${{ github.sha }}"
+
+      - uses: sigstore/cosign-installer@v3
+        if: github.event_name == 'push'
+
+      # Signature KEYLESS : l'identité OIDC de CETTE run GitHub Actions
+      # (repo + workflow + ref, voir Fulcio/Sigstore) prouve la
+      # provenance — aucune clé longue durée à protéger ni à faire fuiter.
+      # Signé par DIGEST (pas par tag) : un tag est mutable, un digest ne
+      # l'est pas — signer un tag signerait "n'importe quelle image qui
+      # portera un jour ce nom", pas CETTE image précise.
+      - name: Cosign — signature keyless
+        if: github.event_name == 'push'
+        run: |
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:${{ github.sha }}")
+          cosign sign --yes "$DIGEST"

@@ -32,3 +32,13 @@ output "kubectl_credentials_command" {
   description = "Commande à lancer pour configurer kubectl une fois le cluster créé"
   value       = "gcloud container clusters get-credentials ${module.gke.cluster_name} --region ${var.region} --project ${var.project_id}"
 }
+
+output "github_actions_ci_sa_email" {
+  description = "Projet 4 — email du SA emprunté par la CI GitHub Actions (vide si github_repository n'est pas défini)"
+  value       = module.iam.github_actions_ci_sa_email
+}
+
+output "github_actions_workload_identity_provider" {
+  description = "Projet 4 — à coller dans workload_identity_provider du workflow GitHub Actions"
+  value       = module.iam.github_actions_workload_identity_provider
+}
