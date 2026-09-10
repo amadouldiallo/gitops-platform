@@ -34,7 +34,7 @@ Mêmes symboles que le Projet 1 en tête de bloc de commentaire :
 | 5 — Ingress & TLS | `k8s/cert-manager/`, `charts/app/templates/ingress.yaml` | ✅ **certificat Let's Encrypt de production réel, testé sans `-k`** — voir §Ingress & TLS |
 | 6 — GitOps (Argo CD) | `k8s/argocd/` | ✅ **auto-sync + self-heal testés en conditions réelles** — voir §GitOps |
 | 7 — Secrets (Vault + ESO) | `k8s/external-secrets/` | ✅ **plus aucun mot de passe en clair dans Git** — voir §Secrets |
-| 8 — FinOps Kubernetes | — | ❌ pas encore |
+| 8 — FinOps Kubernetes | `k8s/finops/` | ✅ **coût réel par namespace, tarifs GCP réels** — voir §FinOps Kubernetes |
 
 ## Infrastructure (Terraform)
 
@@ -420,6 +420,81 @@ demanderait un stockage persistant et un vrai processus de scellement —
 hors scope pour ce lab, mais le flux ESO ↔ Vault lui-même (auth
 Kubernetes, `ClusterSecretStore`, `ExternalSecret`) reste identique.
 
+## FinOps Kubernetes (Étape 8) — la dernière du guide
+
+`k8s/finops/` déploie OpenCost + Prometheus + Grafana, avec un dashboard
+et une alerte provisionnés par ConfigMap (pas cliqués dans l'UI — même
+philosophie GitOps que le reste de ce dépôt). Les
+`resources.requests`/`limits` cohérents demandés par cette étape sont en
+place depuis l'Étape 3/4 (voir `charts/app/values.yaml`) : rien à
+ajouter là.
+
+```mermaid
+flowchart LR
+    subgraph nodes["Nodes GKE"]
+        cadvisor["cAdvisor<br/>(intégré au kubelet)"]
+    end
+
+    WI["🪪 Workload Identity<br/>(GSA opencost-billing)"] -->|"identité Google valide,<br/>aucun rôle IAM projet requis"| BILLING["☁️ Cloud Billing<br/>Catalog API"]
+    BILLING -->|"tarifs RÉELS<br/>e2-medium europe-west1"| OC["📊 OpenCost"]
+    cadvisor -->|"allocation CPU/RAM<br/>par conteneur"| PROM["🗄️ Prometheus"]
+    OC -->|"expose /metrics<br/>(tarifs par node)"| PROM
+    PROM --> GRAF["📈 Grafana<br/>dashboard + alerte"]
+
+    style OC fill:#4285F4,color:#fff
+    style GRAF fill:#34A853,color:#fff
+```
+
+**Le calcul du coût, concrètement** : Grafana ne fait qu'une multiplication
+PromQL entre deux familles de métriques exposées par OpenCost —
+`container_cpu_allocation`/`container_memory_allocation_bytes` (combien
+chaque conteneur consomme, mesuré par cAdvisor) et
+`node_cpu_hourly_cost`/`node_ram_hourly_cost` (le tarif GCP réel du node
+qui l'héberge), jointes sur le label `node` :
+
+```promql
+sum by (namespace) (
+  container_cpu_allocation * on(node) group_left() node_cpu_hourly_cost
+  +
+  container_memory_allocation_bytes / 1073741824 * on(node) group_left() node_ram_hourly_cost
+)
+```
+
+**Trois bugs réels résolus, dans l'ordre où ils sont apparus** :
+1. **`/var/configs: permission denied`.** L'image OpenCost ne peut pas
+   écrire à l'endroit où elle voudrait mettre en cache les prix
+   téléchargés. Corrigé avec un `emptyDir` monté sur ce chemin précis
+   (`extraVolumes`/`extraVolumeMounts` du chart).
+2. **`roles/billing.viewer` refusé à l'apply.** Ce rôle n'existe qu'au
+   niveau d'un COMPTE de facturation
+   (`google_billing_account_iam_member`), pas d'un PROJET — le seul type
+   que gère `modules/gke`. Retiré : le catalogue de prix public GCP
+   n'exige qu'une identité Google authentifiée, pas un rôle particulier —
+   Workload Identity seule (`workload_identity_service_accounts.opencost`
+   avec `roles = []`) a suffi une fois la propagation IAM terminée
+   (~1 minute, un `403: iam.serviceAccounts.getAccessToken denied`
+   transitoire pendant ce délai).
+3. **Prometheus ne scrapait pas OpenCost du tout.** Aucune découverte
+   automatique par défaut avec ce chart — `node_cpu_hourly_cost`
+   renvoyait 0 série dans Prometheus alors que le `/metrics` d'OpenCost,
+   lui, l'exposait bien. Corrigé avec un `extraScrapeConfigs` explicite
+   pointant directement vers `opencost.opencost.svc.cluster.local:9003`.
+
+**Vérifié pour de vrai** : `node_cpu_hourly_cost` pour `e2-medium` en
+`europe-west1` renvoie `0.02399337` $/cœur/heure — le vrai tarif GCP, pas
+un défaut générique. La requête PromQL ci-dessus, testée directement sur
+Prometheus puis via le proxy interne de Grafana (donc dans les mêmes
+conditions qu'un panel réel), renvoie 12 séries avec un coût en dollars
+par namespace. La règle d'alerte (`k8s/finops/grafana-alert.yaml`,
+namespace `task-tracker` > 0,05 $/h) est chargée et s'évalue
+correctement (`inactive`, cohérent avec un coût réel d'environ
+0,007 $/h pour ce namespace).
+
+⚠️ **Dette assumée** : pas de canal de notification (email/Slack)
+configuré sur l'alerte — elle est visible dans Grafana, mais ne notifie
+personne activement. Devise en dollars (celle du catalogue GCP), pas en
+euros — un détail de configuration, pas une limite du mécanisme.
+
 ## Lancer la stack en local
 
 ```bash
@@ -449,7 +524,8 @@ kubernetes-gitops/
 │   ├── namespace/         # Socle de sécurité (Étape 4) — appliqué à part du chart Helm
 │   ├── cert-manager/      # ClusterIssuer Let's Encrypt (Étape 5)
 │   ├── argocd/            # Application Argo CD (Étape 6) — auto-sync + self-heal
-│   └── external-secrets/  # ClusterSecretStore + ExternalSecret (Étape 7) — Vault
+│   ├── external-secrets/  # ClusterSecretStore + ExternalSecret (Étape 7) — Vault
+│   └── finops/             # Datasource/dashboard/alerte Grafana (Étape 8) — OpenCost
 └── terraform/
     ├── environments/dev/  # Point d'entrée terraform init/plan/apply
     └── modules/
@@ -530,13 +606,44 @@ kubectl apply -f k8s/external-secrets/clustersecretstore.yaml
 kubectl apply -f k8s/external-secrets/externalsecret.yaml
 ```
 
-## Prochaine étape
+Enfin, OpenCost + Prometheus + Grafana (voir §FinOps Kubernetes pour le
+détail) :
 
-Étape 8 (FinOps Kubernetes) : resources.requests/limits déjà en place
-depuis l'Étape 4 (voir `charts/app/templates/*` et le `LimitRange` du
-namespace) — il reste à installer OpenCost, connecté à Prometheus, pour
-visualiser le coût réel par namespace et par label, et un dashboard
-Grafana correspondant. Vu la croissance du cluster au fil de ce guide
-(4 nodes e2-medium, Load Balancer, contrôle plane régional — voir
-§Infrastructure), cette visibilité de coût devient concrètement utile,
-pas juste théorique.
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm install prometheus prometheus-community/prometheus \
+  -n prometheus-system --create-namespace \
+  --set alertmanager.enabled=false --set prometheus-pushgateway.enabled=false \
+  --set server.persistentVolume.enabled=false \
+  -f <(echo 'extraScrapeConfigs: |
+  - job_name: "opencost"
+    static_configs:
+      - targets: ["opencost.opencost.svc.cluster.local:9003"]')
+
+helm repo add opencost https://opencost.github.io/opencost-helm-chart
+helm install opencost opencost/opencost -n opencost --create-namespace \
+  -f <(echo 'extraVolumes:
+  - name: opencost-configs
+    emptyDir: {}
+opencost:
+  exporter:
+    extraVolumeMounts:
+      - name: opencost-configs
+        mountPath: /var/configs')
+
+helm repo add grafana https://grafana.github.io/helm-charts
+helm install grafana grafana/grafana -n grafana --create-namespace \
+  --set persistence.enabled=false --set adminPassword=<ton-mot-de-passe> \
+  --set sidecar.datasources.enabled=true --set sidecar.dashboards.enabled=true \
+  --set sidecar.alerts.enabled=true
+
+kubectl apply -f k8s/finops/
+```
+
+## Guide terminé — et maintenant ?
+
+Les 8 étapes du guide sont construites et testées sur ce cluster, pas
+seulement décrites. Comme le note le guide original : le **Projet 3**
+(Observability & SRE) s'appuierait directement sur cette plateforme — les
+métriques Prometheus déployées ici pour le FinOps en deviendraient le
+socle, étendu aux logs et aux traces pour une observabilité complète.
