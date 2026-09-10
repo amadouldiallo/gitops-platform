@@ -84,8 +84,18 @@ jobs:
       - name: Configure Docker pour Artifact Registry
         run: gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet
 
+      # ⚠️ Piège rencontré pour de vrai à l'Étape 5 (Kyverno, dépôt
+      # devsecops-platform) : la CI signait SEULEMENT le tag SHA, mais le
+      # chart Helm déploie `:latest` (tag flottant, voir values-dev.yaml)
+      # — deux tags, deux images DIFFÉRENTES en pratique (`:latest` n'était
+      # jamais passée par cette CI, poussée à la main pendant les Projets
+      # 2/3). Kyverno vérifiait donc la signature du mauvais objet :
+      # "no signatures found", pas un faux négatif, un vrai trou dans la
+      # chaîne de provenance. Fixé en construisant et poussant les DEUX
+      # tags pour le MÊME digest — signer une fois (par digest, juste en
+      # dessous) couvre les deux, `:latest` y compris.
       - name: Build
-        run: docker build -t "$IMAGE:${{ github.sha }}" apps/backend
+        run: docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" apps/backend
 
       # Sur l'image construite, PAS ENCORE poussée — un même réflexe que
       # trivy fs : rejeter avant de pousser quoi que ce soit de vulnérable
@@ -118,7 +128,9 @@ jobs:
       # n'est pas mergée.
       - name: Push
         if: github.event_name == 'push'
-        run: docker push "$IMAGE:${{ github.sha }}"
+        run: |
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
 
       - uses: sigstore/cosign-installer@v3
         if: github.event_name == 'push'
