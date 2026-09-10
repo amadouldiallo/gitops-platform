@@ -1,0 +1,67 @@
+# =============================================================================
+# Application Argo CD — Git devient la seule source de vérité
+# =============================================================================
+#
+# 🎯 Le concept
+# Argo CD compare en continu l'état RÉEL du cluster à l'état DÉCLARÉ dans
+# `charts/app` sur la branche `main` de ce dépôt. `selfHeal: true` va plus
+# loin qu'un simple déploiement au push : tout écart détecté À TOUT MOMENT
+# (pas seulement après un commit) est automatiquement corrigé — un
+# `kubectl scale`/`kubectl edit` manuel est ramené à l'état déclaré en
+# quelques secondes.
+#
+# 🧠 Analogie
+# Un thermostat. Tu définis la température désirée dans Git ; Argo CD
+# corrige en continu l'écart avec la température réelle du cluster, sans
+# intervention manuelle.
+#
+# ⚠️ Ce fichier est lui-même commité dans Git — cohérent avec "Git = seule
+# source de vérité" — mais son PREMIER apply reste manuel
+# (`kubectl apply -f k8s/argocd/application.yaml`) : Argo CD ne peut pas
+# se déployer lui-même avant d'exister. Une fois cette Application créée,
+# en revanche, un futur changement de CE fichier (ex. passer selfHeal à
+# false) devrait, lui, repasser par un commit — pas par un kubectl apply
+# manuel, qui casserait la promesse GitOps dès le premier écart corrigé.
+#
+# ⚠️ postgres.password ci-dessous reste un COMPROMIS DÉLIBÉRÉMENT TEMPORAIRE :
+# une vraie valeur (même "dev-only") commitée dans un manifest Argo CD est
+# exactement ce que l'Étape 7 (External Secrets Operator + Vault) doit
+# éliminer. Elle disparaîtra de ce fichier dès que
+# `postgres.existingSecret` (déjà prêt dans le chart, voir
+# charts/app/templates/backend-secret.yaml) pointera vers un Secret
+# alimenté par Vault plutôt que déclaré ici en clair.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: task-tracker
+  namespace: argocd
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/amadouldiallo/gitops-platform.git
+    targetRevision: main
+    path: charts/app
+    helm:
+      valueFiles:
+        - values-dev.yaml
+      valuesObject:
+        imageRegistry: europe-west1-docker.pkg.dev/devops-498817/gitops-images
+        postgres:
+          password: dev-cluster-test-only # voir l'avertissement ci-dessus
+        ingress:
+          enabled: true
+          tls: true
+          host: 34-34-138-87.nip.io # IP du LoadBalancer ingress-nginx — change si le service est recréé
+          clusterIssuer: letsencrypt-prod
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: task-tracker
+
+  syncPolicy:
+    automated:
+      prune: true # supprime du cluster ce qui a été retiré de Git
+      selfHeal: true # corrige tout écart détecté, pas seulement au push
+    syncOptions:
+      - CreateNamespace=false # le namespace est géré à part, voir k8s/namespace/
