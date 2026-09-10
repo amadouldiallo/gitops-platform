@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-frontend
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/part-of: task-tracker
+spec:
+  replicas: {{ .Values.frontend.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: frontend
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      # ServiceAccount dédié, créé par k8s/namespace/ (pas par ce chart —
+      # voir values.yaml, champ "namespace") avec
+      # automountServiceAccountToken: false : ce pod n'appelle jamais
+      # l'API Kubernetes, donc son jeton de ServiceAccount n'a AUCUNE
+      # raison d'être monté — un pod compromis qui n'a pas de jeton du
+      # tout ne peut pas s'en servir pour interroger l'API, même avec un
+      # RBAC minimal.
+      serviceAccountName: {{ .Release.Name }}-frontend
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101 # uid "nginx" de l'image nginx-unprivileged (voir apps/frontend/Dockerfile)
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: frontend
+          image: "{{ include "app.frontendImage" . }}"
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          # Surcharge les valeurs par défaut de l'image (voir
+          # apps/frontend/Dockerfile, pensées pour docker-compose) avec le
+          # vrai nom du Service Kubernetes du backend — voir
+          # apps/frontend/nginx.conf.template pour le piège rencontré ici
+          # en testant sur un vrai cluster (nom de service différent entre
+          # docker-compose et Kubernetes).
+          env:
+            - name: BACKEND_HOST
+              value: {{ printf "%s-backend" .Release.Name | quote }}
+            - name: BACKEND_PORT
+              value: {{ .Values.backend.service.port | quote }}
+          # Les MÊMES chemins de santé que le HEALTHCHECK Docker (Étape 2)
+          # deviennent ici les probes Kubernetes — c'est précisément pour
+          # cette réutilisation qu'ils avaient été posés dès l'Étape 1.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.frontend.resources | nindent 12 }}
+          # ⚠️ readOnlyRootFilesystem: true (ci-dessus) casserait nginx SANS
+          # ces trois volumes : (1) son cache de fichiers temporaires,
+          # (2) son PID file, et surtout (3) /etc/nginx/conf.d lui-même —
+          # c'est là que l'entrypoint officiel de l'image ÉCRIT le fichier
+          # de config généré par envsubst À CHAQUE DÉMARRAGE du conteneur
+          # (voir apps/frontend/nginx.conf.template) : sans volume
+          # inscriptible à cet endroit précis, ce serait exactement le
+          # genre d'échec qui ne se voit qu'au démarrage réel du pod, pas
+          # à la lecture du Dockerfile.
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: tmp
+              mountPath: /tmp
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: nginx-conf
+          emptyDir: {}

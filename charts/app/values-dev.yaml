@@ -1,0 +1,37 @@
+# Environnement dev : petite échelle, Postgres in-cluster pour ne rien
+# dépendre d'un Cloud SQL externe, pas d'Ingress (accès via port-forward).
+#
+# Usage :
+#   helm install task-tracker charts/app -f charts/app/values-dev.yaml \
+#     --set postgres.password=<mot-de-passe-local>
+#
+# postgres.password n'est PAS défini dans ce fichier committé — même
+# principe que .env pour docker-compose (voir .env.example) : à fournir au
+# moment de l'install, jamais en clair dans Git.
+
+# ⚠️ Piège rencontré en itérant sur un vrai cluster : avec un tag flottant
+# ("latest") et imagePullPolicy: IfNotPresent (le défaut, voir values.yaml),
+# un node qui a DÉJÀ mis en cache "task-tracker-frontend:latest" ne
+# re-tirera JAMAIS l'image, même après un nouveau `docker push` du même
+# tag — il continue de faire tourner l'ancien contenu, silencieusement. En
+# dev, où l'on pousse fréquemment sous le même tag pendant qu'on itère,
+# Always est le bon choix. En prod (values-prod.yaml), des tags IMMUABLES
+# (ex. le SHA du commit Git) rendent Always inutile ET plus lent (un pull
+# réseau à chaque redémarrage de pod) — IfNotPresent y reste préférable.
+frontend:
+  replicaCount: 1
+  image:
+    pullPolicy: Always
+
+backend:
+  replicaCount: 1
+  image:
+    pullPolicy: Always
+
+postgres:
+  enabled: true
+  image:
+    pullPolicy: Always
+
+ingress:
+  enabled: false

@@ -1,0 +1,83 @@
+# =============================================================================
+# NetworkPolicy — le règlement de circulation entre les pièces
+# =============================================================================
+#
+# 🎯 Le concept
+# Dès qu'AU MOINS UNE NetworkPolicy sélectionne un pod pour l'ingress,
+# CE POD passe en "liste blanche" : seul le trafic explicitement autorisé
+# par une policy qui le sélectionne peut l'atteindre — tout le reste est
+# refusé, sans qu'il soit besoin d'une règle "deny" explicite. Un pod que
+# NULLE policy ne sélectionne reste, lui, entièrement ouvert.
+#
+# 🧠 Analogie
+# Voir le guide : frontend peut parler à backend, mais pas directement à
+# la cave (postgresql) où sont les archives.
+#
+# ❓ Pourquoi c'est important
+# Sans ça, n'importe quel pod du cluster (y compris un pod compromis dans
+# un tout autre namespace) peut ouvrir une connexion directe vers
+# Postgres s'il connaît son adresse IP — la segmentation réseau n'existe
+# que si elle est appliquée, pas seulement documentée dans une analogie.
+#
+# db : n'accepte du trafic QUE depuis les pods "backend", sur le port
+# Postgres. En sélectionnant db pour l'ingress, cette policy bloque de
+# fait tout accès direct depuis frontend — exactement la règle demandée.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-allow-from-backend
+  namespace: task-tracker
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: db
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# backend : n'accepte du trafic QUE depuis les pods "frontend" (le proxy
+# nginx local, voir apps/frontend/nginx.conf.template) OU depuis le
+# namespace ingress-nginx — sur le port de l'API.
+#
+# ⚠️ Piège rencontré en activant l'Étape 5 : l'Ingress (voir
+# charts/app/templates/ingress.yaml) route "/api" DIRECTEMENT vers le
+# Service backend, sans repasser par le frontend — exactement ce que
+# demande le guide. Le pod du contrôleur ingress-nginx n'est PAS labellisé
+# "frontend", donc la policy d'origine (qui n'autorisait QUE ce label) le
+# bloquait aussi silencieusement : "504 Gateway Time-out" côté navigateur,
+# sans le moindre indice réseau. `namespaceSelector` cible le namespace
+# entier via son label automatique `kubernetes.io/metadata.name` (posé par
+# Kubernetes depuis la 1.21, pas besoin de le créer à la main).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-allow-from-frontend
+  namespace: task-tracker
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: frontend
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+
+# 🔭 Pas de NetworkPolicy sur "frontend" ici : il reste accessible depuis
+# n'importe où dans le cluster (y compris désormais depuis
+# ingress-nginx, sans qu'il ait fallu l'ajouter explicitement — aucune
+# policy ne le sélectionne, donc il reste ouvert par défaut, voir le
+# concept en tête de fichier).

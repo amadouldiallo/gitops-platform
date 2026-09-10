@@ -1,0 +1,8 @@
+# Copie ce fichier en backend.hcl puis remplis avec ton propre bucket.
+# backend.hcl (le vrai) est ignoré par Git.
+#
+# Utilisation : terraform init -backend-config=backend.hcl
+# (le bucket doit déjà exister, voir README.md)
+
+bucket = "TON-PROJET-tfstate"
+prefix = "kubernetes-gitops/state"

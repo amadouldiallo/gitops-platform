@@ -1,0 +1,55 @@
+# =============================================================================
+# Stack locale de développement — PAS le déploiement Kubernetes final
+# =============================================================================
+# Sert à valider que les 3 tiers (frontend → backend → base) se parlent
+# correctement AVANT d'ajouter la complexité de Kubernetes par-dessus
+# (Helm à l'Étape 3, sécurité à l'Étape 4, GitOps à l'Étape 6...). Une
+# erreur d'architecture applicative (mauvaise variable d'env, mauvais nom
+# de service) est bien plus rapide à déboguer ici qu'une fois enterrée
+# sous des manifests Kubernetes.
+#
+# Utilisation :
+#   cp .env.example .env   # puis éditer PGPASSWORD
+#   docker compose up --build
+#   -> http://localhost:8080
+
+services:
+  db:
+    build: ./apps/db
+    environment:
+      POSTGRES_DB: ${PGDATABASE:-appdb}
+      POSTGRES_USER: ${PGUSER:-appuser}
+      # Pas de valeur par défaut ici (${PGPASSWORD:?...}) : on force la
+      # présence d'un .env plutôt que de faire tourner, même en local, une
+      # base avec un mot de passe vide ou trivial codé en dur dans ce
+      # fichier (qui, lui, EST commité).
+      POSTGRES_PASSWORD: ${PGPASSWORD:?Renseigne PGPASSWORD dans un fichier .env (voir .env.example)}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-appuser} -d ${PGDATABASE:-appdb}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build: ./apps/backend
+    environment:
+      PGHOST: db # nom du service ci-dessus, résolu par le DNS interne de Docker Compose
+      PGPORT: "5432"
+      PGDATABASE: ${PGDATABASE:-appdb}
+      PGUSER: ${PGUSER:-appuser}
+      PGPASSWORD: ${PGPASSWORD:?Renseigne PGPASSWORD dans un fichier .env (voir .env.example)}
+    depends_on:
+      db:
+        condition: service_healthy # attend que Postgres soit RÉELLEMENT prêt, pas juste démarré
+
+  frontend:
+    build: ./apps/frontend
+    ports:
+      - "8080:8080" # seul port exposé à l'hôte — backend et db restent internes au réseau compose
+    depends_on:
+      - backend
+
+volumes:
+  db-data:

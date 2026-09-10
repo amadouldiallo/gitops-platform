@@ -1,0 +1,101 @@
+{{- /*
+StatefulSet plutôt que Deployment : Postgres a un ÉTAT (les données) qui
+doit rester attaché au MÊME volume même si le pod est recréé — un
+Deployment ne garantit pas cette stabilité d'identité/volume, un
+StatefulSet si (voir apps/db/Dockerfile pour la mise en garde complète sur
+le fait qu'une base auto-hébergée en cluster n'est de toute façon pas le
+choix recommandé en production).
+*/ -}}
+{{- if .Values.postgres.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-db
+  labels:
+    app.kubernetes.io/name: db
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  serviceName: {{ .Release.Name }}-db
+  replicas: 1 # une seule instance : pas de réplication Postgres ici, cohérent avec le statut "dev only" de ce mode
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: db
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: db
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}-db
+      containers:
+        - name: postgres
+          image: "{{ include "app.postgresImage" . }}"
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          # ⚠️ Pas de runAsNonRoot/runAsUser, et pas de `capabilities.drop`
+          # ici, contrairement au frontend et au backend — et c'est
+          # délibéré, pas un oubli. L'image officielle postgres démarre
+          # volontairement en root pour ajuster les permissions du volume
+          # de données monté (chown/chmod), PUIS bascule elle-même vers
+          # l'utilisateur "postgres" via gosu, en interne à son propre
+          # entrypoint. `drop: ["ALL"]` avait été essayé ici, puis retiré :
+          # testé sur le vrai cluster, ça cassait le pod avec des erreurs
+          # "chmod: /var/run/postgresql: Operation not permitted" — retirer
+          # TOUTES les capacités Linux retire aussi celles (CAP_CHOWN,
+          # CAP_SETUID...) dont l'entrypoint a besoin pour ce chown initial
+          # et pour gosu lui-même, même si le conteneur démarre encore en
+          # UID 0. Durcir proprement ce point précis demanderait un
+          # initContainer dédié — hors scope ici, cohérent avec le statut
+          # "dev only" déjà documenté dans apps/db/Dockerfile.
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.user | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "app.postgresSecretName" . }}
+                  key: password
+            # ⚠️ Piège rencontré en testant sur un vrai cluster GKE : le
+            # PersistentVolume monté directement sur /var/lib/postgresql/data
+            # contient déjà un dossier "lost+found" (créé par le système de
+            # fichiers du disque GCE sous-jacent) — initdb refuse
+            # d'initialiser dans un répertoire non vide. La solution
+            # documentée par l'image officielle postgres : pointer PGDATA
+            # vers un SOUS-dossier du point de montage, jamais le point de
+            # montage lui-même.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            # ⚠️ -d explicite requis : sans lui, pg_isready tente de se
+            # connecter à une base du MÊME NOM que l'utilisateur (ici
+            # "appuser", qui n'existe pas — seule "appdb" existe), ce qui
+            # remplit les logs de "FATAL: database appuser does not exist"
+            # en continu. Sans effet sur le résultat de la probe elle-même
+            # (pg_isready la considère "accepting connections" quand même),
+            # mais un bruit de log parasite et trompeur — trouvé en
+            # observant les logs du pod sur le vrai cluster.
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgres.user | quote }}, "-d", {{ .Values.postgres.database | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storage }}
+{{- end }}

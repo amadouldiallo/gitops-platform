@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-backend
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/part-of: task-tracker
+spec:
+  replicas: {{ .Values.backend.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backend
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      # Même raisonnement que le frontend : ce pod n'appelle jamais l'API
+      # Kubernetes, seulement Postgres — aucune raison qu'il porte un
+      # jeton de ServiceAccount.
+      serviceAccountName: {{ .Release.Name }}-backend
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001 # uid "appuser" (voir apps/backend/Dockerfile)
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: backend
+          image: "{{ include "app.backendImage" . }}"
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-backend-config
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "app.postgresSecretName" . }}
+                  key: password
+          # /healthz (liveness) ne dépend jamais de la base — voir
+          # apps/backend/app/main.py. /readyz (readiness) en dépend : tant
+          # que Postgres n'est pas joignable, le pod sort de la rotation de
+          # trafic SANS être redémarré. Voir README §Architecture.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+          # readOnlyRootFilesystem: true (ci-dessus) + PYTHONDONTWRITEBYTECODE=1
+          # (voir apps/backend/Dockerfile) suffisent pour Python lui-même,
+          # mais psycopg (et plus généralement toute lib qui utilise le
+          # module tempfile) s'attend à pouvoir écrire dans /tmp.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

@@ -1,0 +1,19 @@
+Task Tracker déployé (release "{{ .Release.Name }}", namespace "{{ .Release.Namespace }}").
+
+{{- if .Values.ingress.enabled }}
+Accès : https://{{ .Values.ingress.host }}
+{{- else }}
+Pas d'Ingress activé (ingress.enabled=false). Pour un accès local :
+  kubectl port-forward svc/{{ .Release.Name }}-frontend {{ .Values.frontend.service.port }}:{{ .Values.frontend.service.port }} -n {{ .Release.Namespace }}
+  puis http://localhost:{{ .Values.frontend.service.port }}
+{{- end }}
+
+{{- if .Values.postgres.enabled }}
+
+Postgres est déployé DANS ce cluster (postgres.enabled=true) — pratique
+pour développer, mais voir apps/db/Dockerfile pour pourquoi ce n'est pas
+le choix recommandé en production.
+{{- else }}
+
+Postgres externe attendu sur : {{ .Values.postgres.host }}
+{{- end }}

@@ -1,0 +1,53 @@
+# =============================================================================
+# RBAC — qui peut faire quoi, DANS ce namespace précis
+# =============================================================================
+#
+# 🎯 Le concept
+# Une couche à part de l'IAM GCP (voir terraform/modules/iam) : IAM décide
+# QUI peut s'authentifier auprès de l'API Kubernetes du cluster
+# (`roles/container.admin`, accordé à l'échelle du PROJET GCP entier) ;
+# RBAC décide, une fois authentifié, ce que cette identité peut RÉELLEMENT
+# faire, namespace par namespace.
+#
+# ⚠️ Piège à connaître, pas à "corriger" ici — l'IAM `roles/container.admin`
+# du Projet Terraform accorde déjà un accès cluster-admin complet, qui
+# l'emporte sur n'importe quel Role plus étroit défini ci-dessous. Ce Role
+# namespace-scoped documente donc l'intention (« cette identité n'a besoin
+# que de CE namespace ») plus qu'il ne la fait respecter techniquement
+# tant que l'IAM GCP reste aussi large — un exemple concret de la
+# différence entre restreindre sur le papier et restreindre en pratique.
+# Le resserrer vraiment demanderait de remplacer container.admin par un
+# rôle IAM plus étroit côté Terraform, hors scope de cette étape.
+#
+# ⚠️ Remplace CHANGE-ME@example.com par ton adresse Google réelle
+# (var.admin_email dans terraform/environments/dev/terraform.tfvars) avant
+# d'appliquer ce fichier.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: task-tracker-developer
+  namespace: task-tracker
+rules:
+  - apiGroups: ["", "apps", "batch"]
+    resources: ["pods", "pods/log", "services", "configmaps", "deployments", "statefulsets", "replicasets", "jobs", "events", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Secrets : lecture seule, jamais delete/create depuis ce Role — la
+  # gestion des secrets applicatifs devient le rôle d'External Secrets
+  # Operator à l'Étape 7, pas d'un humain via kubectl.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: task-tracker-developer-binding
+  namespace: task-tracker
+subjects:
+  - kind: User
+    name: CHANGE-ME@example.com
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: task-tracker-developer
+  apiGroup: rbac.authorization.k8s.io

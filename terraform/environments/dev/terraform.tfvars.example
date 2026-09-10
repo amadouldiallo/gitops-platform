@@ -1,0 +1,17 @@
+# Copie ce fichier en terraform.tfvars puis remplis les valeurs réelles.
+# N'oublie pas non plus backend.hcl (voir backend.hcl.example).
+
+# ID de ton projet GCP — obtenu via : gcloud projects list
+# Peut être le même projet que le Projet 1, ou un projet distinct.
+project_id = "mon-projet-12345"
+
+# Format XXXXXX-XXXXXX-XXXXXX — obtenu via : gcloud billing accounts list
+billing_account_id = "XXXXXX-XXXXXX-XXXXXX"
+
+# Compte Google humain qui pilotera le cluster (kubectl)
+admin_email = "prenom.nom@example.com"
+
+# --- FinOps -------------------------------------------------------------
+environment = "dev"
+cost_center = "lab-perso"
+# extra_labels = { team = "platform" }

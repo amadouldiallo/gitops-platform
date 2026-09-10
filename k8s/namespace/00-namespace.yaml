@@ -1,0 +1,34 @@
+# =============================================================================
+# Namespace dédié — la cloison entre cette appli et le reste du cluster
+# =============================================================================
+#
+# 🎯 Le concept
+# Un namespace Kubernetes isole un ensemble de ressources : noms, quotas,
+# RBAC et NetworkPolicy s'y appliquent tous à cette échelle. Tout ce qui
+# suit dans ce dossier (quotas, RBAC, NetworkPolicy) n'a de sens QUE
+# rattaché à un namespace précis — d'où ce fichier en premier
+# (numérotation "00-" : appliqué avant tout le reste).
+#
+# 🧠 Analogie
+# Voir le guide : le namespace est l'appartement d'un locataire dans un
+# immeuble partagé — porte fermée à clé (RBAC), compteur électrique
+# individuel (ResourceQuota/LimitRange), règlement de circulation propre
+# entre les pièces (NetworkPolicy).
+#
+# ❓ Pourquoi c'est important
+# Déployer directement dans "default" (ce qu'on a fait jusqu'à l'Étape 3)
+# mélange cette appli avec tout ce qui pourrait tourner ailleurs sur le
+# cluster — aucun quota, aucune isolation réseau, aucun contrôle d'accès
+# différencié n'est possible sans cette cloison.
+#
+# ⚠️ Délibérément à part du chart Helm (pas un template de charts/app) :
+# un `helm uninstall` ne doit JAMAIS pouvoir supprimer le namespace
+# lui-même (et tout ce qu'il contient, y compris des ressources non
+# gérées par Helm) — le cycle de vie du namespace et de ses politiques
+# est distinct de celui d'une release applicative.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: task-tracker
+  labels:
+    app.kubernetes.io/part-of: task-tracker

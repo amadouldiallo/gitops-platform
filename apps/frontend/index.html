@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Task Tracker</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <h1>Task Tracker</h1>
+    <p class="subtitle">Démo 3-tiers — frontend statique → backend API → PostgreSQL</p>
+
+    <form id="task-form">
+      <input id="task-title" type="text" placeholder="Nouvelle tâche" required maxlength="200" />
+      <button type="submit">Ajouter</button>
+    </form>
+
+    <ul id="task-list"></ul>
+    <p id="status" role="status"></p>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

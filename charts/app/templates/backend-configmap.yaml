@@ -1,0 +1,12 @@
+# Uniquement des valeurs NON sensibles ici (hôte, nom de base,
+# utilisateur) — le mot de passe vit à part, dans un Secret (voir
+# backend-secret.yaml), jamais dans un ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-backend-config
+data:
+  PGHOST: {{ include "app.postgresHost" . | quote }}
+  PGPORT: "5432"
+  PGDATABASE: {{ .Values.postgres.database | quote }}
+  PGUSER: {{ .Values.postgres.user | quote }}

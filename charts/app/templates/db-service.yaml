@@ -1,0 +1,21 @@
+{{- if .Values.postgres.enabled }}
+# Service headless (clusterIP: None) : le pairing standard d'un
+# StatefulSet — donne une identité réseau stable au pod plutôt qu'un
+# load-balancing round-robin qui n'aurait aucun sens pour une base
+# unique.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-db
+  labels:
+    app.kubernetes.io/name: db
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: db
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: postgres
+      port: 5432
+{{- end }}

@@ -1,0 +1,43 @@
+# ⚠️ Piège rencontré en déployant sur un vrai cluster GKE : le nom du
+# service backend N'EST PAS le même entre docker-compose ("backend", le
+# nom du service dans docker-compose.yml) et Kubernetes
+# ("task-tracker-backend", le nom du Service Helm — voir
+# charts/app/templates/backend-service.yaml). Un nom codé en dur cassait
+# le pod frontend (CrashLoopBackOff : "host not found in upstream").
+#
+# Solution : ce fichier est un TEMPLATE (suffixe .template, placé dans
+# /etc/nginx/templates/ par le Dockerfile), substitué par le script
+# d'entrée officiel de l'image nginx via `envsubst` AU DÉMARRAGE du
+# conteneur, à partir des variables d'environnement réellement présentes
+# dans le conteneur (voir BACKEND_HOST/BACKEND_PORT ci-dessous) — jamais
+# au moment du build de l'image. Même image Docker, deux environnements,
+# une seule variable qui change.
+#
+# Reverse-proxy minimal : sert les fichiers statiques, et relaie "/api/"
+# vers le service backend — même découpage que l'Ingress de l'Étape 5
+# (/ → frontend, /api → backend), pour que le code JS (app.js) n'ait RIEN
+# à changer entre ce nginx local et l'Ingress Kubernetes final.
+server {
+  listen 8080;
+
+  # Pas de version dans l'en-tête Server: une info gratuite en moins pour
+  # un attaquant qui chercherait une CVE connue sur une version précise.
+  server_tokens off;
+
+  location /healthz {
+    return 200 "ok";
+    add_header Content-Type text/plain;
+  }
+
+  location /api/ {
+    proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT}/api/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+  }
+
+  location / {
+    root /usr/share/nginx/html;
+    index index.html;
+    try_files $uri /index.html;
+  }
+}

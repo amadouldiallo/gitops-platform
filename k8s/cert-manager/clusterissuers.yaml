@@ -1,0 +1,51 @@
+# =============================================================================
+# ClusterIssuer — la source de confiance pour les certificats TLS
+# =============================================================================
+#
+# 🎯 Le concept
+# cert-manager délègue l'émission réelle des certificats à un "Issuer" (ou
+# `ClusterIssuer`, valable pour tout le cluster plutôt qu'un seul
+# namespace). Ici, l'ACME de Let's Encrypt, via le challenge HTTP-01 :
+# Let's Encrypt demande une preuve que TU contrôles bien le domaine, en
+# allant chercher un jeton précis sur http://<domaine>/.well-known/...,
+# routé par l'Ingress Controller lui-même (voir la classe `nginx`
+# ci-dessous, la même que celle des Ingress applicatifs).
+#
+# ⚠️ Piège — DEUX ClusterIssuer, staging ET production, et c'est
+# volontaire. L'environnement `production` de Let's Encrypt applique des
+# limites de taux strictes (quelques échecs répétés, ex. un DNS mal
+# configuré pendant qu'on débogue, peuvent bloquer un domaine pendant
+# PLUSIEURS JOURS). `staging` a les mêmes limites de taux généreuses et le
+# même flux technique, mais émet des certificats signés par une autorité
+# de test, PAS reconnue par les navigateurs — le bon environnement pour
+# valider que toute la mécanique (Ingress, DNS, challenge HTTP-01)
+# fonctionne AVANT de la pointer vers `production`.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: CHANGE-ME@example.com
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: CHANGE-ME@example.com
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx

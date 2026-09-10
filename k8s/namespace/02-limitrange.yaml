@@ -1,0 +1,38 @@
+# =============================================================================
+# LimitRange — le filet de sécurité si un conteneur oublie ses resources
+# =============================================================================
+#
+# 🎯 Le concept
+# Le ResourceQuota borne le TOTAL du namespace ; le LimitRange borne (et
+# complète par défaut) chaque conteneur INDIVIDUEL. Tous nos conteneurs
+# déclarent déjà leurs propres requests/limits (voir charts/app/values*.yaml)
+# — ce LimitRange est un filet de sécurité pour tout futur conteneur qui
+# les oublierait, pas la source de vérité actuelle.
+#
+# ❓ Pourquoi c'est important
+# Sans "default"/"defaultRequest", un conteneur qui omet ses resources
+# entrerait dans le namespace SANS requête ni limite explicite — invisible
+# pour le ResourceQuota (qui ne compte que ce qui est déclaré) et capable
+# de consommer sans borne apparente. "min"/"max" empêchent aussi l'extrême
+# inverse : un conteneur qui demanderait, par erreur de configuration,
+# 50 CPU.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: task-tracker-limits
+  namespace: task-tracker
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      default:
+        cpu: 200m
+        memory: 128Mi
+      min:
+        cpu: 10m
+        memory: 16Mi
+      max:
+        cpu: "1"
+        memory: 1Gi

@@ -1,0 +1,401 @@
+# Kubernetes GitOps Platform
+
+Plateforme applicative 3-tiers, destinée à être déployée sur Kubernetes
+uniquement via Git (GitOps), avec un socle de sécurité et une gestion des
+secrets propre. Construite en suivant
+[Projet-2-Kubernetes-GitOps-Guide.md](Projet-2-Kubernetes-GitOps-Guide.md),
+la suite de [Projet 1](https://github.com/amadouldiallo/gcp-platform).
+
+Ce dépôt est **auto-suffisant** : son propre cluster GKE (`terraform/`),
+indépendant de celui du Projet 1 — aucune référence croisée entre les deux
+dépôts, chacun se clone et se comprend seul.
+
+## Comment lire ce dépôt
+
+Mêmes symboles que le Projet 1 en tête de bloc de commentaire :
+
+| Symbole | Signification |
+|---|---|
+| 🎯 | Le concept — ce que fait le composant, en langage simple |
+| 🧠 | Analogie — pour ancrer le concept dans quelque chose de concret |
+| ❓ | Pourquoi c'est important — la conséquence si on s'en passe |
+| ⚠️ | Piège — une erreur facile à faire, rencontrée en écrivant ce code |
+| 🔭 | Pour aller plus loin — une amélioration volontairement pas faite ici |
+
+## Avancement
+
+| Étape du guide | Dossier(s) | Statut |
+|---|---|---|
+| — Infrastructure (Terraform) | `terraform/` | ✅ **appliquée pour de vrai** — cluster `gitops-platform` actif sur GCP, voir §Infrastructure |
+| 1 — Application de démo | `apps/{frontend,backend,db}/` | ✅ testée en local (`docker compose`) |
+| 2 — Docker | `apps/*/Dockerfile` | ✅ multi-stage (backend), non-root, healthchecks — testée |
+| 3 — Helm | `charts/app/` | ✅ **déployé et testé sur le vrai cluster GKE** — CRUD complet vérifié, voir §Helm |
+| 4 — Socle de sécurité K8s | `k8s/namespace/`, `charts/app/templates/` | ✅ **appliqué et testé sur le vrai cluster** — voir §Socle de sécurité |
+| 5 — Ingress & TLS | `k8s/cert-manager/`, `charts/app/templates/ingress.yaml` | ✅ **certificat Let's Encrypt de production réel, testé sans `-k`** — voir §Ingress & TLS |
+| 6 — GitOps (Argo CD) | `argocd/` | ❌ pas encore |
+| 7 — Secrets (Vault + ESO) | — | ❌ pas encore |
+| 8 — FinOps Kubernetes | — | ❌ pas encore |
+
+## Infrastructure (Terraform)
+
+`terraform/` provisionne le cluster GKE qui hébergera cette plateforme —
+réseau VPC-native dédié, cluster régional privé, Workload Identity, budget
+FinOps séparé de celui du Projet 1. Code indépendant du Projet 1 (pas de
+`source = "../../cloud-platform/..."`) : ce dépôt reste clonable et
+compréhensible seul.
+
+```mermaid
+flowchart TD
+    ENV["📁 environments/dev"] --> NET["📦 module network<br/>VPC · subnet VPC-native · NAT"]
+    ENV --> IAM["📦 module iam<br/>SA Terraform · accès kubectl"]
+    ENV --> BUD["📦 module budget<br/>filtré par label platform"]
+    ENV --> GKE["📦 module gke<br/>cluster régional · Workload Identity"]
+    NET -->|vpc_id, subnet_self_link| GKE
+
+    style GKE fill:#4285F4,color:#fff
+```
+
+⚠️ **Coût** : un cluster GKE régional facture le control plane et chaque
+node en continu — nettement plus qu'une VM de lab. `total_min_node_count`
+et `location_policy = "BALANCED"` (voir `modules/gke`) bornent le nombre
+de nodes sur l'ensemble des 3 zones plutôt que par zone, mais le coût
+reste réel dès le premier `apply`.
+
+⚠️ **Piège de private cluster documenté dans le code** : une règle de
+firewall dédiée autorise le control plane à appeler les webhooks
+d'admission des opérateurs des étapes suivantes (cert-manager, External
+Secrets Operator, Argo CD) — sans elle, leur installation échoue avec des
+timeouts opaques, un problème classique des clusters GKE privés.
+
+```bash
+cd terraform/environments/dev
+cp terraform.tfvars.example terraform.tfvars   # project_id, billing_account_id, admin_email...
+cp backend.hcl.example backend.hcl             # ton bucket de state
+terraform init -backend-config=backend.hcl
+terraform plan     # 20 to add, 0 to change, 0 to destroy — testé contre un vrai projet GCP
+terraform apply
+```
+
+⚠️ **Ce cluster est actuellement appliqué et actif** (`terraform apply`
+réellement exécuté, cluster `gitops-platform`, europe-west1) — il facture
+en continu tant qu'il existe. `terraform destroy` depuis
+`terraform/environments/dev` le supprime proprement quand tu as fini de
+travailler dessus.
+
+## Architecture (Étapes 1-2)
+
+```mermaid
+flowchart LR
+    BROWSER["🌐 Navigateur"] -->|":8080"| FE
+
+    subgraph COMPOSE["docker compose (local) / futur Pod Kubernetes"]
+        FE["🖥️ frontend<br/>nginx-unprivileged<br/>fichiers statiques + reverse-proxy"]
+        BE["⚙️ backend<br/>FastAPI (non-root)<br/>:8000"]
+        DB["🗄️ db<br/>PostgreSQL 16<br/>:5432"]
+        FE -->|"proxy_pass /api/ → backend:8000"| BE
+        BE -->|"psycopg_pool"| DB
+    end
+
+    style FE fill:#4285F4,color:#fff
+    style BE fill:#34A853,color:#fff
+    style DB fill:#FBBC04,color:#000
+```
+
+**Pourquoi le frontend proxifie `/api/` vers le backend** (voir
+`apps/frontend/nginx.conf.template`) plutôt que d'appeler le backend directement
+depuis le navigateur : le code JS (`app.js`) appelle un chemin relatif
+(`/api/tasks`), qui fonctionnera à l'identique une fois derrière
+l'Ingress Kubernetes de l'Étape 5 (`/` → frontend, `/api` → backend) —
+aucun changement de code entre le dev local et la prod.
+
+**Deux endpoints de santé distincts** (`/healthz` et `/readyz` sur le
+backend, voir `apps/backend/app/main.py`) — posés dès maintenant car ils
+deviendront directement les `livenessProbe`/`readinessProbe` du Helm
+chart à l'Étape 3 :
+- `/healthz` (liveness) : le process tourne, ne dépend jamais de la base.
+- `/readyz` (readiness) : peut servir du trafic MAINTENANT, dépend de la base.
+
+## Helm (Étape 3)
+
+`charts/app` template les 3 tiers en manifests Kubernetes. Déployé pour de
+vrai sur le cluster GKE `gitops-platform` (pas seulement `helm
+lint`/`helm template`) et testé en conditions réelles : CRUD complet via
+`kubectl port-forward`, exactement le même test qu'en local avec `docker
+compose`.
+
+```mermaid
+flowchart TD
+    subgraph values["values-dev.yaml / values-prod.yaml"]
+        direction LR
+        DEV["dev : Postgres in-cluster<br/>1 replica, pas d'Ingress"]
+        PROD["prod : Postgres externe<br/>(Cloud SQL), 2 replicas, Ingress+TLS"]
+    end
+    values --> CHART["📦 charts/app"]
+    CHART --> FE["Deployment frontend"]
+    CHART --> BE["Deployment backend"]
+    CHART --> DB["StatefulSet db<br/>(si postgres.enabled)"]
+    CHART -.->|"si ingress.enabled"| ING["Ingress (Étape 5)"]
+
+    style CHART fill:#4285F4,color:#fff
+```
+
+**`postgres.existingSecret` plutôt qu'un mot de passe en clair dans
+`values-prod.yaml`** : ce chart ne gère JAMAIS lui-même le Secret en prod
+— il attend qu'un Secret existe déjà (créé par l'ExternalSecret de
+l'Étape 7). En dev, un Secret de convenance est généré depuis
+`--set postgres.password=...`, jamais commité — voir
+`charts/app/templates/backend-secret.yaml`.
+
+**Trois bugs réels trouvés en déployant sur le vrai cluster** (aucun des
+trois n'apparaît avec `helm lint`/`helm template` seuls — la vraie
+validation a été de déployer pour de vrai) :
+
+1. **Nom de service différent entre `docker compose` et Kubernetes.**
+   `nginx.conf` codait en dur `proxy_pass http://backend:...` (le nom du
+   service dans `docker-compose.yml`) — sur Kubernetes, le Service
+   s'appelle `task-tracker-backend`. Le frontend partait en
+   `CrashLoopBackOff` avec "host not found in upstream". Corrigé en
+   transformant `nginx.conf` en `nginx.conf.template` (mécanisme
+   `envsubst` déjà intégré à l'image nginx officielle), avec
+   `BACKEND_HOST`/`BACKEND_PORT` fournis en variables d'environnement —
+   valeurs par défaut dans le Dockerfile pour `docker compose`, surchargées
+   par le chart Helm pour Kubernetes. Même image Docker, deux
+   environnements.
+2. **`initdb` refuse un volume Kubernetes non vide.** Un
+   PersistentVolume GKE fraîchement monté contient déjà un dossier
+   `lost+found` (créé par le système de fichiers du disque sous-jacent) —
+   `initdb` refuse d'y initialiser une base. Corrigé en pointant `PGDATA`
+   vers un sous-dossier du point de montage (`/var/lib/postgresql/data/pgdata`),
+   la solution documentée par l'image officielle `postgres` pour ce cas
+   précis.
+3. **Tag flottant `latest` + `imagePullPolicy: IfNotPresent`.** Un node
+   qui a déjà mis en cache une image sous un tag donné ne la re-tire
+   JAMAIS, même après un nouveau `docker push` du même tag — il continue
+   silencieusement de faire tourner l'ancien contenu. `values-dev.yaml`
+   force désormais `pullPolicy: Always` (cohérent avec des tags flottants
+   qu'on pousse en boucle pendant qu'on développe) ; `values-prod.yaml`
+   garde `IfNotPresent` par défaut, adapté à des tags immuables (le SHA
+   d'un commit Git, par exemple).
+
+## Socle de sécurité (Étape 4)
+
+`k8s/namespace/` (appliqué séparément du chart Helm, `kubectl apply -f`,
+pas un template de `charts/app`) déploie le namespace `task-tracker` et
+tout ce qui l'encadre. Testé pour de vrai sur le cluster : rebasculer la
+release Helm de `default` vers ce namespace, puis vérifier que ce qui doit
+être bloqué l'est vraiment.
+
+```mermaid
+flowchart TD
+    subgraph NS["namespace task-tracker"]
+        direction TB
+        RQ["ResourceQuota<br/>+ LimitRange"]
+        SA["ServiceAccounts dédiés<br/>automountServiceAccountToken: false"]
+        RBAC["Role + RoleBinding<br/>scopé au namespace"]
+
+        FE["🖥️ frontend<br/>runAsNonRoot · readOnlyRootFilesystem"]
+        BE["⚙️ backend<br/>runAsNonRoot · readOnlyRootFilesystem"]
+        DB["🗄️ db"]
+
+        FE -->|"autorisé"| BE
+        BE -->|"autorisé"| DB
+        FE -.->|"❌ bloqué par NetworkPolicy"| DB
+    end
+
+    style DB fill:#FBBC04,color:#000
+    style FE fill:#4285F4,color:#fff
+```
+
+**Deux découvertes réelles, faites en testant sur le cluster** (aucune ne
+se serait vue à la simple lecture des manifests) :
+
+1. **`capabilities.drop: ["ALL"]` casse Postgres.** L'image officielle
+   `postgres` démarre en root pour ajuster les permissions du volume de
+   données (`chown`), puis bascule elle-même vers l'utilisateur `postgres`
+   via `gosu` — un mécanisme interne à son entrypoint. Retirer TOUTES les
+   capacités Linux retire aussi celles (`CAP_CHOWN`, `CAP_SETUID`...) dont
+   ce mécanisme a besoin, même si le conteneur démarre encore en UID 0. Le
+   pod partait en `CrashLoopBackOff` avec `chmod: Operation not permitted`.
+   Corrigé en retirant ce `drop` pour le seul conteneur `db` (voir le
+   commentaire dans `charts/app/templates/db-statefulset.yaml`) — le
+   frontend et le backend, eux, le gardent sans problème.
+2. **Les `NetworkPolicy` n'étaient tout simplement pas appliquées.** Un
+   premier test (un pod labellisé "frontend" qui parvenait quand même à
+   joindre Postgres) a révélé que ce cluster GKE, créé sans
+   `datapath_provider`, n'active PAS l'application des NetworkPolicy par
+   défaut — les objets existent dans l'API, `kubectl apply` les accepte,
+   mais rien ne les fait respecter. Corrigé en ajoutant
+   `datapath_provider = "ADVANCED_DATAPATH"` (GKE Dataplane V2, basé sur
+   Cilium) dans `terraform/modules/gke/main.tf` — un champ qui force la
+   RECRÉATION complète du cluster (`terraform plan` l'indique clairement :
+   `must be replaced`). Fait pour de vrai (~10 minutes) ; le test refait
+   ensuite a confirmé le blocage. Piège Terraform annexe découvert au
+   passage : le node pool, lui, n'a PAS été recréé dans le même `apply`
+   (ses propres arguments n'avaient pas changé, Terraform n'a donc pas vu
+   de raison de le toucher) — un second `terraform apply` a été nécessaire
+   pour le recréer après coup.
+
+**Ce qui est vérifié, concrètement, sur le vrai cluster** :
+- `kubectl exec` dans un pod labellisé `frontend` → connexion directe à
+  `task-tracker-db:5432` → **timeout** (bloqué).
+- Le même test depuis un pod labellisé `backend` → **connexion acceptée**.
+- `kubectl auth can-i delete namespaces --as=<toi> -n task-tracker` → `no`.
+- `kubectl describe resourcequota` reflète la consommation réelle des 3 pods.
+
+## Ingress & TLS (Étape 5)
+
+`ingress-nginx` (Ingress Controller, via son chart Helm officiel) et
+`cert-manager` sont installés sur le cluster, avec deux `ClusterIssuer`
+Let's Encrypt (`k8s/cert-manager/clusterissuers.yaml`). Pas de nom de
+domaine acheté pour ce projet : le domaine de test utilise
+[nip.io](https://nip.io) (`<ip-avec-tirets>.nip.io` résout automatiquement
+vers cette IP) — un vrai domaine publiquement résolvable, ce qui permet un
+vrai challenge HTTP-01 et un vrai certificat, pas une simulation.
+
+```mermaid
+sequenceDiagram
+    participant Nav as Navigateur
+    participant Ing as ingress-nginx<br/>(IP publique)
+    participant CM as cert-manager
+    participant LE as Let's Encrypt
+    participant FE as Service frontend
+    participant BE as Service backend
+
+    CM->>LE: Demande un certificat pour <ip>.nip.io
+    LE->>Ing: GET /.well-known/acme-challenge/... (vérifie le contrôle du domaine)
+    Ing->>CM: Route le challenge vers cert-manager
+    LE-->>CM: Certificat émis
+    Note over CM: Stocké dans le Secret task-tracker-tls
+
+    Nav->>Ing: HTTPS :443 (SNI = <ip>.nip.io)
+    Ing->>Ing: Termine le TLS avec le vrai certificat
+    Ing->>FE: / → frontend
+    Ing->>BE: /api → backend (DIRECT, pas via frontend)
+```
+
+**Deux bugs réels, encore une fois trouvés en testant, pas en lisant le YAML** :
+
+1. **Nodes saturés en mémoire.** `ingress-nginx` restait `Pending`
+   ("Insufficient memory") : les 3 nodes `e2-small` tournaient déjà à
+   87-97 % de mémoire ALLOUÉE (namespace `kube-system` + cert-manager +
+   l'appli), et `total_max_node_count = 3` empêchait l'autoscaler d'ajouter
+   un 4ᵉ node. Corrigé en relevant cette borne à 4 dans
+   `terraform/modules/gke/variables.tf` — un choix délibérément marginal
+   (pas un passage à un `machine_type` plus gros) pour garder le coût
+   incrémental le plus bas possible.
+2. **Le NetworkPolicy de l'Étape 4 bloquait l'Ingress lui-même.**
+   `/api` route DIRECTEMENT vers le Service backend (demandé explicitement
+   par le guide) — mais la NetworkPolicy `backend-allow-from-frontend` ne
+   laissait passer QUE les pods labellisés "frontend". Le pod du
+   contrôleur ingress-nginx, qui n'a pas ce label, se faisait bloquer
+   silencieusement : `504 Gateway Time-out` côté navigateur, sans le
+   moindre indice réseau dans les logs applicatifs. Corrigé en ajoutant un
+   second `from` à la policy, ciblant le namespace `ingress-nginx` via son
+   label automatique `kubernetes.io/metadata.name` (posé par Kubernetes
+   depuis la 1.21, pas besoin de le créer à la main).
+
+**Vérifié pour de vrai, sans rien simuler** :
+```bash
+curl https://34-34-138-87.nip.io/healthz   # sans -k : la confiance doit être native
+openssl s_client -connect <ip>:443 -servername <ip>.nip.io \
+  | openssl x509 -noout -issuer
+# issuer=C=US, O=Let's Encrypt, CN=YR1   (pas "STAGING")
+```
+Le passage `letsencrypt-staging` → `letsencrypt-prod` a été fait
+volontairement en deux temps : valider tout le flux (Ingress, DNS,
+challenge HTTP-01) avec `staging` d'abord (aucune limite de taux
+préoccupante), puis seulement ensuite basculer vers `prod` — voir le
+commentaire dans `k8s/cert-manager/clusterissuers.yaml` pour pourquoi
+inverser cet ordre est risqué.
+
+⚠️ **Coût supplémentaire** : le contrôleur `ingress-nginx` crée un Network
+Load Balancer GCP (facturé en continu, indépendamment du trafic) en plus
+du 4ᵉ node ajouté ci-dessus — les deux s'ajoutent au budget FinOps déjà en
+place (`module.budget`, filtré par `platform=kubernetes-gitops`).
+
+## Lancer la stack en local
+
+```bash
+cp .env.example .env   # puis éditer PGPASSWORD
+docker compose up --build
+```
+
+- Frontend : http://localhost:8080
+- Health : http://localhost:8080/healthz
+- API : http://localhost:8080/api/tasks
+
+Testé de bout en bout (CRUD complet, healthchecks des 3 conteneurs,
+utilisateurs non-root vérifiés) avant tout commit.
+
+## Structure
+
+```
+kubernetes-gitops/
+├── docker-compose.yml   # Stack locale — valide l'architecture AVANT Kubernetes
+├── .env.example         # Modèle, à copier en .env (gitignored)
+├── apps/
+│   ├── frontend/         # Statique (HTML/CSS/JS) + nginx reverse-proxy (template envsubst)
+│   ├── backend/          # API FastAPI + PostgreSQL (psycopg_pool)
+│   └── db/                # postgres:16-alpine + schéma d'init
+├── charts/app/           # Chart Helm (Étape 3) — values-dev.yaml / values-prod.yaml
+├── k8s/
+│   ├── namespace/         # Socle de sécurité (Étape 4) — appliqué à part du chart Helm
+│   └── cert-manager/      # ClusterIssuer Let's Encrypt (Étape 5)
+└── terraform/
+    ├── environments/dev/  # Point d'entrée terraform init/plan/apply
+    └── modules/
+        ├── network/        # VPC VPC-native, subnet, NAT
+        ├── iam/             # SA Terraform, accès kubectl humain
+        ├── budget/          # Budget FinOps filtré par label
+        └── gke/             # Cluster régional + Workload Identity
+```
+
+## Déployer sur le cluster (namespace sécurisé)
+
+```bash
+kubectl apply -f k8s/namespace/00-namespace.yaml
+kubectl apply -f k8s/namespace/01-resourcequota.yaml
+kubectl apply -f k8s/namespace/02-limitrange.yaml
+kubectl apply -f k8s/namespace/03-serviceaccounts.yaml
+sed 's/CHANGE-ME@example.com/TON-EMAIL/' k8s/namespace/04-rbac.yaml | kubectl apply -f -
+kubectl apply -f k8s/namespace/05-networkpolicy.yaml
+
+helm install task-tracker charts/app -n task-tracker \
+  -f charts/app/values-dev.yaml \
+  --set imageRegistry=<sortie "artifact_registry" du terraform> \
+  --set postgres.password=<mot-de-passe-dev>
+```
+
+Pour activer l'Ingress + TLS par-dessus (voir §Ingress & TLS pour le
+détail) :
+
+```bash
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo add jetstack https://charts.jetstack.io
+helm install ingress-nginx ingress-nginx/ingress-nginx \
+  -n ingress-nginx --create-namespace \
+  --set controller.service.type=LoadBalancer
+helm install cert-manager jetstack/cert-manager \
+  -n cert-manager --create-namespace --set crds.enabled=true
+
+sed 's/CHANGE-ME@example.com/TON-EMAIL/' k8s/cert-manager/clusterissuers.yaml | kubectl apply -f -
+
+IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+HOST="${IP//./-}.nip.io"   # ou ton propre domaine, avec un vrai enregistrement DNS A
+
+helm upgrade task-tracker charts/app -n task-tracker \
+  -f charts/app/values-dev.yaml \
+  --set imageRegistry=<sortie "artifact_registry" du terraform> \
+  --set postgres.password=<mot-de-passe-dev> \
+  --set ingress.enabled=true --set ingress.tls=true \
+  --set ingress.host="$HOST" --set ingress.clusterIssuer=letsencrypt-staging
+```
+
+## Prochaine étape
+
+Étape 6 — GitOps avec Argo CD : Git devient la seule source de vérité de
+l'état désiré du cluster. `charts/app` et `k8s/` existent déjà — il s'agit
+maintenant de les pointer depuis une `Application` Argo CD en mode
+auto-sync + self-heal, puis de vérifier qu'un `kubectl scale` manuel est
+bien annulé automatiquement.

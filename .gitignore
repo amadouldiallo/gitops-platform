@@ -1,0 +1,23 @@
+# Secrets locaux — voir .env.example pour la version partageable
+.env
+**/.env
+
+# Python
+**/__pycache__/
+*.pyc
+.venv/
+
+# Node (si un jour un outillage frontend avec build apparaît)
+node_modules/
+
+# macOS / éditeurs
+.DS_Store
+.vscode/
+*.swp
+
+# Terraform (voir terraform/environments/dev/.gitignore pour le détail)
+**/.terraform/
+**/*.tfstate*
+**/terraform.tfvars
+**/backend.hcl
+**/crash.log

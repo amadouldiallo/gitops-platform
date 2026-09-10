@@ -1,0 +1,50 @@
+# Environnement prod : plus de replicas, ressources plus généreuses,
+# Postgres externe (Cloud SQL, pas in-cluster), Ingress + TLS activés.
+#
+# ⚠️ Les deux valeurs marquées CHANGE-ME ci-dessous sont des PLACEHOLDERS
+# volontaires : ce fichier reste commitable sans jamais contenir de vraie
+# donnée d'environnement. À surcharger via --set ou un fichier
+# values-prod.local.yaml (gitignored) au moment de l'install réel.
+#
+# postgres.password n'apparaît PAS ici : postgres.existingSecret pointe
+# vers un Secret que Helm ne gère PAS lui-même (voir backend-secret.yaml)
+# — celui que l'ExternalSecret de l'Étape 7 créera depuis Vault. Tant que
+# l'Étape 7 n'est pas construite, ce Secret doit être créé manuellement
+# pour que ce values-prod.yaml soit utilisable.
+
+frontend:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 300m
+      memory: 128Mi
+
+backend:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
+postgres:
+  enabled: false
+  host: "CHANGE-ME.cloudsql.internal" # IP privée / hostname Cloud SQL réel
+  existingSecret: "backend-db-credentials" # créé par l'ExternalSecret de l'Étape 7
+
+ingress:
+  enabled: true
+  className: nginx
+  host: "CHANGE-ME.example.com" # domaine réel du déploiement
+  tls: true
+  # "prod", pas "staging" — mais seulement une fois le flux entier validé
+  # avec letsencrypt-staging (voir k8s/cert-manager/clusterissuers.yaml) :
+  # les limites de taux de l'environnement prod de Let's Encrypt sont
+  # strictes et peuvent bloquer un domaine plusieurs jours en cas d'essais
+  # répétés pendant un débogage.
+  clusterIssuer: letsencrypt-prod

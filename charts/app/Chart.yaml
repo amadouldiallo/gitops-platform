@@ -1,0 +1,8 @@
+apiVersion: v2
+name: task-tracker
+description: >-
+  Chart Helm pour l'application 3-tiers de démonstration (frontend statique,
+  backend FastAPI, PostgreSQL) — Étape 3 du guide GitOps.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

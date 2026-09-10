@@ -1,0 +1,83 @@
+# Valeurs par défaut, communes à dev ET prod. Chaque `-f values-<env>.yaml`
+# appliqué en plus de celui-ci ne fait que SURCHARGER les clés qu'il
+# définit (comportement standard de `helm install -f a.yaml -f b.yaml`) —
+# pas besoin de tout redéfinir dans values-dev.yaml/values-prod.yaml.
+
+# Préfixe optionnel, ex. "europe-west1-docker.pkg.dev/mon-projet/gitops"
+# (Artifact Registry). Vide par défaut : suppose des images construites et
+# chargées localement (voir docker-compose.yml), pratique pour un premier
+# `helm template`/`helm lint` sans registre.
+imageRegistry: ""
+
+frontend:
+  replicaCount: 1
+  image:
+    repository: task-tracker-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 64Mi
+  service:
+    port: 8080
+
+backend:
+  replicaCount: 1
+  image:
+    repository: task-tracker-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  service:
+    port: 8000
+
+postgres:
+  # true : le chart déploie SA PROPRE instance Postgres (StatefulSet,
+  # apps/db/Dockerfile) — pratique en dev, déconseillé en prod (voir ce
+  # Dockerfile pour pourquoi). false : le backend se connecte à un hôte
+  # externe (postgres.host), typiquement une instance Cloud SQL managée.
+  enabled: true
+  image:
+    repository: task-tracker-db
+    tag: latest
+    pullPolicy: IfNotPresent
+  storage: 1Gi
+  database: appdb
+  user: appuser
+  host: "" # requis si enabled=false
+  existingSecret: "" # nom d'un Secret K8s existant, clé "password" — voir Étape 7 (External Secrets Operator)
+  password: "" # mot de passe en clair — DEV UNIQUEMENT, jamais commité (voir values-dev.yaml et backend-secret.yaml)
+  resources:
+    # Obligatoire dès que le ResourceQuota du namespace est appliqué (voir
+    # k8s/namespace/) : un ResourceQuota avec des bornes cpu/memory refuse
+    # à l'admission tout pod qui ne déclare pas ses requests/limits — sans
+    # ce bloc, le pod db serait rejeté au démarrage, pas juste "mal réglé".
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+ingress:
+  enabled: false # activé à l'Étape 5 (Ingress & TLS)
+  className: nginx
+  host: ""
+  tls: false
+  clusterIssuer: letsencrypt-staging # voir k8s/cert-manager/clusterissuers.yaml — "staging" par défaut, jamais "prod" sans le valider d'abord
+
+# Namespace cible — voir k8s/namespace/00-namespace.yaml. Doit exister
+# AVANT `helm install` (voir README §Socle de sécurité) : ce chart ne le
+# crée pas lui-même (son cycle de vie ne doit pas dépendre d'une release
+# Helm, voir le commentaire dans 00-namespace.yaml).
+namespace: task-tracker
