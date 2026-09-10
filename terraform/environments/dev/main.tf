@@ -51,6 +51,30 @@ module "gke" {
 
   labels = local.common_labels
 
+  # OpenCost (Étape 8) a besoin d'une IDENTITÉ Google valide pour appeler le
+  # catalogue de prix public GCP (Cloud Billing Catalog API) — exactement
+  # le cas d'usage anticipé par ce mécanisme depuis l'Étape 5/6 (voir la
+  # section "Workload Identity" de modules/gke/main.tf), resté vide
+  # jusqu'ici faute de consommateur concret.
+  #
+  # ⚠️ Piège rencontré : roles = ["roles/billing.viewer"] échoue à
+  # l'apply ("Role roles/billing.viewer is not supported for this
+  # resource") — ce rôle n'existe qu'au niveau d'un COMPTE de facturation
+  # (google_billing_account_iam_member), pas d'un PROJET
+  # (google_project_iam_member, le seul type que gère ce module). Retiré :
+  # le catalogue de prix public ne demande qu'une authentification Google
+  # valide, aucune autorisation particulière — Workload Identity fournit
+  # exactement ça, sans le moindre rôle IAM projet à accorder.
+  workload_identity_service_accounts = {
+    opencost = {
+      account_id          = "opencost-billing"
+      display_name        = "OpenCost — lecture catalogue de prix GCP"
+      k8s_namespace       = "opencost"
+      k8s_service_account = "opencost"
+      roles               = []
+    }
+  }
+
   depends_on = [google_project_service.required, module.network]
 }
 

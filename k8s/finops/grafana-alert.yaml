@@ -1,0 +1,60 @@
+# =============================================================================
+# Alerte Grafana — dépassement de coût par namespace
+# =============================================================================
+# 🎯 Le concept
+# Une règle d'alerte unifiée Grafana (provisionnée par ConfigMap, même
+# mécanisme que le dashboard et la datasource) qui surveille le coût
+# horaire du namespace `task-tracker` et passe en alerte si la moyenne sur
+# 5 minutes dépasse 0,05 $/h — un seuil délibérément bas pour ce lab (le
+# namespace applicatif à lui seul, hors outils de plateforme, tourne
+# normalement bien en dessous).
+#
+# ⚠️ Pas de canal de notification configuré (email/Slack) : cette règle
+# passe en état "Alerting" visible dans Grafana, mais ne notifie personne
+# activement — configurer un contact point est un pas de plus, volontairement
+# hors scope ici pour un lab à un seul opérateur qui consulte le dashboard
+# directement.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-alert-finops
+  namespace: grafana
+  labels:
+    grafana_alert: "1"
+data:
+  finops-cost-alert.yaml: |
+    apiVersion: 1
+    groups:
+      - orgId: 1
+        name: finops-cost-alerts
+        folder: FinOps
+        interval: 1m
+        rules:
+          - uid: finops-task-tracker-cost
+            title: "task-tracker dépasse le budget attendu"
+            condition: C
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Le coût horaire du namespace task-tracker dépasse le seuil attendu (0.05 $/h)."
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 600
+                  to: 0
+                datasourceUid: prometheus
+                model:
+                  expr: 'sum(container_cpu_allocation{namespace="task-tracker"} * on(node) group_left() node_cpu_hourly_cost + container_memory_allocation_bytes{namespace="task-tracker"} / 1073741824 * on(node) group_left() node_ram_hourly_cost)'
+                  instant: true
+                  refId: A
+              - refId: C
+                datasourceUid: "__expr__"
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator:
+                        type: gt
+                        params: [0.05]

@@ -1,0 +1,92 @@
+# =============================================================================
+# Dashboard Grafana — coût par namespace, provisionné par ConfigMap
+# =============================================================================
+#
+# 🎯 Le concept
+# OpenCost expose des métriques de TARIF (`node_cpu_hourly_cost`,
+# `node_ram_hourly_cost` — le prix réel GCP, voir modules/gke pour le
+# Workload Identity qui lui permet de le récupérer) et des métriques
+# d'ALLOCATION (`container_cpu_allocation`, `container_memory_allocation_bytes`
+# — combien chaque conteneur consomme). Grafana ne fait QUE la
+# multiplication PromQL entre les deux, agrégée par namespace — le calcul
+# du coût lui-même reste entièrement dans OpenCost, Grafana n'est qu'une
+# fenêtre dessus.
+#
+# ❓ Pourquoi un ConfigMap plutôt que créé à la main dans l'UI
+# Même raison que grafana-datasource.yaml : `persistence.enabled=false`
+# sur ce Grafana de lab (voir README) signifie qu'un dashboard créé dans
+# l'UI serait perdu au moindre redémarrage de pod — déjà vécu avec Vault
+# à l'Étape 7. Le sidecar de dashboards (même mécanisme que les
+# datasources) recharge ce ConfigMap à chaque démarrage.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-finops
+  namespace: grafana
+  labels:
+    grafana_dashboard: "1"
+data:
+  finops-cost-by-namespace.json: |
+    {
+      "title": "FinOps — coût par namespace",
+      "uid": "finops-cost-by-namespace",
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "time": { "from": "now-6h", "to": "now" },
+      "refresh": "1m",
+      "panels": [
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Coût total du cluster ($/h)",
+          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "sum(container_cpu_allocation * on(node) group_left() node_cpu_hourly_cost + container_memory_allocation_bytes / 1073741824 * on(node) group_left() node_ram_hourly_cost)",
+              "legendFormat": "total"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "currencyUSD", "decimals": 4 }
+          }
+        },
+        {
+          "id": 2,
+          "type": "bargauge",
+          "title": "Coût par namespace ($/h) — CPU + RAM alloués x tarif GCP réel",
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 6 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "sum by (namespace) (container_cpu_allocation * on(node) group_left() node_cpu_hourly_cost + container_memory_allocation_bytes / 1073741824 * on(node) group_left() node_ram_hourly_cost)",
+              "legendFormat": "{{namespace}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "currencyUSD", "decimals": 4 }
+          },
+          "options": {
+            "orientation": "horizontal",
+            "displayMode": "gradient",
+            "showUnfilled": true
+          }
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Coût par namespace dans le temps ($/h)",
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 16 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "sum by (namespace) (container_cpu_allocation * on(node) group_left() node_cpu_hourly_cost + container_memory_allocation_bytes / 1073741824 * on(node) group_left() node_ram_hourly_cost)",
+              "legendFormat": "{{namespace}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "currencyUSD", "decimals": 4 }
+          }
+        }
+      ]
+    }

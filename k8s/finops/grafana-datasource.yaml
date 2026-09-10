@@ -1,0 +1,31 @@
+# =============================================================================
+# Datasource Grafana — provisionnée par ConfigMap, pas cliquée dans l'UI
+# =============================================================================
+#
+# ❓ Pourquoi un ConfigMap plutôt que l'écran "Add data source" de Grafana
+# Cohérent avec tout le reste de ce dépôt (Git = source de vérité) : le
+# sidecar `kiwigrid/k8s-sidecar` du chart Grafana (activé via
+# `sidecar.datasources.enabled=true`) surveille les ConfigMaps portant le
+# label `grafana_datasource: "1"` dans le cluster et les importe
+# automatiquement — un `helm upgrade`/redémarrage de Grafana ne perd donc
+# jamais cette configuration, contrairement à un clic dans l'UI (non
+# persisté, `persistence.enabled=false` ici — voir §FinOps du README).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasource-prometheus
+  namespace: grafana
+  labels:
+    grafana_datasource: "1"
+data:
+  prometheus.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus # fixé explicitement — sans ça Grafana en génère un
+        # aléatoire à l'import, imprévisible depuis grafana-dashboard.yaml qui
+        # doit le référencer.
+        type: prometheus
+        access: proxy
+        url: http://prometheus-server.prometheus-system.svc.cluster.local:80
+        isDefault: true
